@@ -1,0 +1,781 @@
+---
+title: "Plotting clustering all cells"
+author: "Jordi Camps"
+date: "`r format(Sys.time(), '%d %B, %Y, %H:%M')`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(SC3)
+library(scater)
+library(RColorBrewer)
+library(viridis)
+library(SingleCellExperiment)
+library(grid)
+library(BiocGenerics)
+library(scTools)
+library(dplyr)
+library(plyr)
+library(lazyeval)
+library(tidyr)
+library(scran)
+library(ggthemes)
+library(xlsx)
+options(stringsAsFactors = FALSE)
+```
+
+Import sce
+```{r}
+sce <- readRDS("data/reads_qc_scran_sc3.rds")
+```
+
+Are factor already named?
+```{r}
+unique(sce$sc3_7_clusters)
+```
+
+rename populations
+```{r}
+sce$sc3_7_clusters <- plyr::revalue(sce$sc3_7_clusters, c("1" = "ISC 3", "2" = "ISC 1", "3" = "ISC 2", "4" = "Satellite cell", "5" = "Schwann cell", "6" = "SMC", "7" = "Fibroblast"))
+sce$sc3_7_clusters <- factor(sce$sc3_7_clusters, levels = c("ISC 1", "ISC 2", "ISC 3", "Fibroblast", "SMC", "Satellite cell", "Schwann cell"))
+```
+
+## Plot sc3 clusters on PCA
+```{r fig.height=5, fig.width=5}
+k = c(4:9)
+clusters = NULL
+for (i in k) {
+  clusters[i-3] <- paste("sc3", i, "clusters", sep = "_")
+}
+```
+
+
+```{r fig.height=5, fig.width=5}
+variables <- c("marker", "genotype")
+var_clust <- c(variables, clusters)
+for (v in var_clust) {
+  print(
+    plotPCA(sce, ncomponents = 5, colour_by = v) +
+    ggtitle(v)
+  )
+}
+```
+
+## export annotated clusters to csv
+```{r}
+export <- counts(sce)
+colnames(export) <- sce$sc3_7_clusters
+write.csv(export, file = "tables/Camps_annotated_interstitial_clusters.csv")
+```
+
+##Load in functions
+```{r}
+make_col_ann_for_heatmaps <- function(object, show_pdata) {
+    if (any(!show_pdata %in% colnames(colData(object)))) {
+        show_pdata_excl <- show_pdata[!show_pdata %in% colnames(colData(object))]
+        show_pdata <- show_pdata[show_pdata %in% colnames(colData(object))]
+        message(paste0("Provided columns '", paste(show_pdata_excl, collapse = "', '"), "' do not exist in the phenoData table!"))
+        if (length(show_pdata) == 0) {
+            return(NULL)
+        }
+    }
+    ann <- NULL
+    if (is.null(metadata(object)$sc3$svm_train_inds)) {
+        ann <- colData(object)[, colnames(colData(object)) %in% show_pdata]
+    } else {
+        ann <- colData(object)[metadata(object)$sc3$svm_train_inds, colnames(colData(object)) %in% 
+            show_pdata]
+    }
+    # remove columns with 1 value only
+    if (length(show_pdata) > 1) {
+        keep <- unlist(lapply(ann, function(x) {
+            length(unique(x))
+        })) > 1
+        if (!all(keep)) {
+            message(paste0("Columns '", paste(names(keep)[!keep], collapse = "', '"), "' were excluded from annotation since they contained only a single value."))
+        }
+        ann <- ann[, names(keep)[keep]]
+        if (ncol(ann) == 0) {
+            ann <- NULL
+        } else {
+            ann <- as.data.frame(lapply(ann, function(x) {
+                if (nlevels(as.factor(x)) > 9) 
+                  x else as.factor(x)
+            }))
+            # convert outlier scores back to numeric
+            for (i in grep("_log2_outlier_score", colnames(ann))) {
+                if (class(ann[, i]) == "factor") {
+                  ann[, i] <- as.numeric(levels(ann[, i]))[ann[, i]]
+                }
+            }
+        }
+    } else {
+        if (length(unique(ann)) > 1) {
+            ann <- as.data.frame(ann)
+            colnames(ann) <- show_pdata
+            if (!grepl("_log2_outlier_score", show_pdata)) {
+                ann <- as.data.frame(lapply(ann, function(x) {
+                  if (nlevels(as.factor(x)) > 9) 
+                    return(x) else return(as.factor(x))
+                }))
+            }
+        } else {
+            message(paste0("Column '", show_pdata, "' was excluded from annotation since they contained only a single value."))
+            ann <- NULL
+        }
+    }
+    return(ann)
+}
+```
+
+##Quality control on clusters
+Consensus plot
+```{r fig.height=5, fig.width=7}
+#png("plots/QC/consensus_k7.png", width = 6, height = 5, res = 600)
+k = 7
+object = sce
+show_pdata = "sc3_7_clusters"
+
+    hc <- metadata(object)$sc3$consensus[[as.character(k)]]$hc
+    hc <- dendextend::rotate(hc, c(256:145))
+    consensus <- metadata(object)$sc3$consensus[[as.character(k)]]$consensus
+    
+    add_ann_col <- FALSE
+    ann <- NULL
+    if (!is.null(show_pdata)) {
+        ann <- make_col_ann_for_heatmaps(object, show_pdata)
+        if (!is.null(ann)) {
+            add_ann_col <- TRUE
+            # make same names for the annotation table
+            rownames(ann) <- colnames(consensus)
+        }
+    mat_colors <- list(sc3_7_clusters = brewer.pal(7, name = "Set2"))
+    names(mat_colors$sc3_7_clusters) <- unique(sce$sc3_7_clusters)[order(unique(sce$sc3_7_clusters))]
+    }
+    pheatmap::pheatmap(mat = consensus, color = colorRampPalette(rev(brewer.pal(n = 5, name =
+"RdYlBu")))(100), cluster_rows = hc, cluster_cols = hc, show_rownames = FALSE, show_colnames = FALSE, treeheight_row = 0, treeheight_col = 0, annotation_names_col = FALSE, legend_breaks = c(0, 1), annotation_col = ann[add_ann_col], annotation_colors = mat_colors, fontsize = 14, annotation_legend = FALSE, filename = "plots/QC/consensus_k7.tiff", width = 4, height = 4)
+```
+
+Cluster stability
+```{r}
+SC3::sc3_plot_cluster_stability(object = sce, k = 9)
+```
+
+Silhouette plot
+```{r fig.height=5, fig.width=6}
+pdf("plots/QC/silhouette_k7.pdf", width = 3.5, height = 3.5)
+plot(metadata(sce)$sc3$consensus$`7`$silhouette, col = c("#8da0cb", "#66c2a5", "#fc8d62",  "#ffd92f", "#e5c494", "#a6d854", "#e78ac3"))
+dev.off()
+```
+
+
+Export information on differentially expressed genes
+```{r}
+k = 7
+p.adj = 0.01
+
+#sc3_plot_de_genes(sce, k = k, show_pdata = TRUE)
+
+table <- sce %>%
+  rowData() %>%
+  as_tibble() %>%
+  #group_by_(paste("sc3", k, "markers_auroc", sep = "_"), paste("sc3", k, "markers_clusts", sep = "_")) %>%
+  filter(sc3_7_de_padj < p.adj & !is.na(sc3_7_de_padj)) %>%
+  select_("feature_symbol", "ensembl_gene_id", paste("sc3", k, "markers_auroc", sep = "_"), paste("sc3", k, "markers_clusts", sep = "_"),
+          paste("sc3", k, "markers_padj", sep = "_"), paste("sc3", k, "de_padj", sep = "_")) %>%
+  arrange(sc3_7_markers_clusts, desc(sc3_7_markers_auroc))
+
+write.csv(table, paste("tables/k",k,"_de_genes.csv", sep = ""))
+
+write.xlsx(as.data.frame(table), file = paste("tables/k",k,"_de_genes.xlsx", sep = ""), col.names = TRUE, row.names = FALSE)
+```
+
+
+## Export components in reduced dim
+### Principal components
+```{r fig.height=5, fig.width=6}
+reducedDim(sce) <- NULL
+sce = plotPCA(sce, ncomponents = 4, colour_by = "genotype", return_SCE = TRUE)
+sce$PC1 <- reducedDim(sce)[,1]
+sce$PC2 <- reducedDim(sce)[,2]
+sce$PC3 <- reducedDim(sce)[,3]
+sce$PC4 <- reducedDim(sce)[,4]
+```
+
+### tSNE
+Try out different perplexities
+```{r fig.height=3, fig.width=4}
+for (p in c(5, 10, 15, 20, 25, 30, 35)) {
+  print(plotTSNE(sce, colour_by = "sc3_7_clusters", return_SCE = FALSE, perplexity = p, exprs_values = "logcounts", rand_seed = 123456) + ggtitle(paste("Perplexity = ", p, sep = "")))
+}
+```
+
+Save tSNE into reduceddim
+```{r fig.height=3, fig.width=4}
+reducedDim(sce) <- NULL
+sce <- plotTSNE(sce, colour_by = "genotype", return_SCE = TRUE, perplexity = 10, exprs_values = "logcounts", rand_seed = 123456)
+sce$Dim1 <- reducedDims(sce)$TSNE[,1]
+sce$Dim2 <- reducedDims(sce)$TSNE[,2]
+```
+
+k-means on tSNE (Colours differently every time it is runned)
+```{r fig.height=3, fig.width=4}
+colData(sce)$tSNE_kmeans <- as.character(kmeans(sce@reducedDims$TSNE, centers = 5)$clust)
+plotTSNE(sce, rand_seed = 123456, colour_by = "tSNE_kmeans")
+```
+
+# Plotting
+## Plot tSNE
+tSNE k=7
+```{r fig.height=3, fig.width=4.75}
+plot_dims(sce, x = "Dim1", y = "Dim2", color = "sc3_7_clusters", theme = 16, point_size = 3, alpha = 1) +
+  labs(x = "Dim 1", y = "Dim 2") +
+  scale_color_brewer(type = "qual", palette = "Set2") +
+  #scale_color_manual(values = col_k7) +
+  #scTools_theme_opts() +
+  theme_bw(base_size = 16) +
+  guides(shape = FALSE) +
+  guides(col = guide_legend(keywidth = 0.3, keyheight = 0.3, default.unit = "inch")) +
+  theme(panel.border = element_blank(), panel.grid = element_blank(), axis.line = element_line(size = 0.75, colour = "black"), axis.ticks = element_blank(), axis.text = element_blank(), legend.title = element_blank())
+ggsave("plots/tSNE/k7.tiff", dpi = 600, width = 4.75, height = 3)
+ggsave("plots/tSNE/k7.pdf", dpi = 1200, width = 4.75, height = 3)
+```
+
+tSNE example for figure 1
+```{r fig.height=2, fig.width=2}
+plot_dims(sce, x = "Dim1", y = "Dim2", color = "sc3_7_clusters", theme = 16, point_size = 3, alpha = 1) +
+  labs(x = "Dim 1", y = "Dim 2") +
+  scale_color_brewer(type = "qual", palette = "Set2") +
+  #scale_color_manual(values = col_k7) +
+  #scTools_theme_opts() +
+  #theme_bw(base_size = 16) +
+  theme_void(base_size = 12) +
+  #ggtitle("Phenotype") +
+  #guides(shape = FALSE) +
+  #guides(col = guide_legend(keywidth = 0.3, keyheight = 0.3, default.unit = "inch")) +
+  theme(panel.border = element_blank(), panel.grid = element_blank(), axis.ticks = element_blank(), axis.text = element_blank(), 
+        legend.title = element_blank(), legend.position = "none")
+ggsave("plots/tSNE/overview_cluster_plot.tiff", dpi = 600)
+ggsave("plots/tSNE/overview_cluster_plot.pdf", dpi = 1200)
+```
+```{r fig.height=2, fig.width=3.4}
+plot_dims(sce, x = "Dim1", y = "Dim2", color = "genotype", theme = 16, point_size = 3, alpha = 1) +
+  labs(x = "Dim 1", y = "Dim 2") +
+  #scale_color_brewer(type = "qual", palette = "Set2") +
+  scale_color_manual(values = c("lightslategrey", "firebrick3")) +
+  #scTools_theme_opts() +
+  #theme_bw(base_size = 16) +
+  theme_void(base_size = 20) +
+  guides(shape = FALSE) +
+  #guides(col = guide_legend(keywidth = 0.3, keyheight = 0.3, default.unit = "inch")) +
+  #ggtitle("Genotype") +
+  theme(panel.border = element_blank(), panel.grid = element_blank(), axis.ticks = element_blank(), axis.text = element_blank(), 
+        legend.title = element_blank())
+ggsave("plots/tSNE/overview_genotype_plot.tiff", dpi = 600)
+ggsave("plots/tSNE/overview_genotype_plot.pdf", dpi = 1200)
+```
+
+## Plot fraction of genotype per cluster
+```{r}
+col_genotype <- c("lightslategrey", "firebrick3")
+```
+
+```{r fig.height=2, fig.width=3.6}
+plot_dims(sce, x = "Dim1", y = "Dim2", color = "genotype", theme = 16, point_size = 2, alpha = 1) +
+  labs(x = "Dim 1", y = "Dim 2") +
+  #scale_color_brewer(type = "qual", palette = "Set2") +
+  scale_color_manual(values = col_genotype) +
+  #scTools_theme_opts() +
+  theme_bw(base_size = 16) +
+  guides(shape = FALSE) +
+  guides(col = guide_legend(keywidth = 0.3, keyheight = 0.3, default.unit = "inch")) +
+  theme(panel.border = element_blank(), panel.grid = element_blank(), axis.line = element_line(size = 0.75, colour = "black"), axis.ticks = element_blank(), axis.text = element_blank(), legend.title = element_blank())
+ggsave("plots/tSNE/genotype.tiff", dpi = 600, width = 3.6, height = 2)
+ggsave("plots/tSNE/genotype.pdf", dpi = 1200, width = 3.6, height = 2)
+```
+
+
+### genotype (fill) per cluster (x) (k=7)
+```{r fig.height=3.5, fig.width=6}
+library(scales)
+colData(sce) %>%
+  as_tibble() %>%
+  group_by(sc3_7_clusters, genotype) %>%
+  tally() %>%
+  ggplot(aes(x = sc3_7_clusters, y = n, fill = genotype)) +
+  geom_col(position = "fill", width = 0.5, alpha = 0.6) +
+  geom_text(aes(label = n), position = "fill", vjust = 1.5) +
+  #geom_hline(yintercept = 0.5, size = 1, linetype = 3, color = "black") +
+  #geom_rangeframe() +
+  #theme_tufte(base_size = 18) +
+  #facet_wrap(~sc3_7_clusters, nrow = 1) +
+  scale_fill_manual(values = c("lightslategray", "firebrick3")) +
+  scale_y_continuous("Percentage per population", labels = percent, expand = c(0, 0)) +
+  #scale_x_discrete(labels = c("Healthy" = "H", "Dystrophic" = "D")) +
+  theme_bw(base_size = 14) +
+  #coord_flip() +
+  #guides(fill = guide_legend(keywidth = 0.8, keyheight = 0.8)) +
+  theme(panel.border = element_blank(), axis.line = element_line(colour = "black", size = 1), axis.ticks.x = element_blank(),
+        panel.grid = element_blank(), axis.ticks.y = element_line(colour = "black", size = 1),
+        axis.text.x = element_text(colour = "black", size = 12, angle = 45, hjust = 1), legend.title = element_blank(), legend.position = "right", 
+        axis.title.x = element_blank(), axis.text.y = element_text(colour = "black"), legend.text = element_text(size = 12),
+        strip.background = element_blank()) 
+ggsave("plots/fraction_genotype_k7.pdf", dpi = 600, width = 6, height = 3.5)
+ggsave("plots/fraction_genotype_k7.tiff", dpi = 600, width = 6, height = 3.5)
+```
+
+### Genotype (x) and cluster (fill) (k=7)
+```{r fig.height=2.5, fig.width=6}
+library(scales)
+colData(sce) %>%
+  as_tibble() %>%
+  group_by(sc3_7_clusters, genotype) %>%
+  tally() %>%
+  mutate(genotype = factor(genotype, levels = rev(levels(sce$genotype)))) %>%
+  ggplot(aes(x = genotype, y = n, fill = sc3_7_clusters)) +
+  geom_col(position = "fill", width = 0.6) +
+  geom_text(aes(label = n), position = "fill", hjust = 1.5, alpha = 0.8, size = 3) +
+  #geom_hline(yintercept = 0.5, size = 1, linetype = 3, color = "black") +
+  scale_fill_manual(values = brewer.pal(7, "Set2")) +
+  scale_y_continuous("Percentage per population", labels = percent, expand = c(0, 0)) +
+  #scale_x_discrete(expand = c(0, 0)) +
+  theme_bw(base_size = 16) +
+  coord_flip() +
+  theme(panel.border = element_blank(), axis.line = element_line(colour = "black"),
+        panel.grid = element_blank(), axis.ticks.x = element_line(colour = "black"), axis.ticks.y = element_blank(),
+        axis.text.x = element_text(colour = "black"), legend.title = element_blank(), legend.position = "right", 
+        axis.text.y = element_text(colour = "black"),
+        strip.background = element_blank(), axis.title.y = element_blank())
+  #guides(fill = guide_legend(keywidth = 0.8, keyheight = 0.8)) +
+  #theme(panel.border = element_blank(), axis.line = element_line(colour = "black", size = 0.75), axis.ticks.x = element_blank(),
+  #      panel.grid = element_blank(), axis.ticks.y = element_line(colour = "black", size = 0.75),
+  #      axis.text.x = element_text(colour = "black", size = 12, angle = 45, hjust = 1), legend.title = element_blank(), legend.position = "right", 
+  #      axis.text.y = element_text(colour = "black"), legend.text = element_text(size = 14),
+  #      strip.background = element_blank(), axis.title.y = element_text(hjust = 1), axis.title.x = element_blank()) 
+ggsave("plots/fraction_k7_genotype.pdf", dpi = 600, width = 6, height = 2.5)
+ggsave("plots/fraction_k7_genotype.tiff", dpi = 600, width = 6, height = 2.5)
+```
+
+
+```{r fig.height=4, fig.width=6}
+library(scales)
+colData(sce[, sce$sc3_7_clusters == "ISC 1" | sce$sc3_7_clusters == "ISC 2" | sce$sc3_7_clusters == "ISC 3"]) %>%
+  as_tibble() %>%
+  group_by(sc3_7_clusters, genotype) %>%
+  tally() %>%
+  #spread(genotype, n) %>%
+  #mutate(total = Healthy + Dystrophic) %>%
+  ggplot(aes(x = sc3_7_clusters, y = n, fill = genotype)) +
+  geom_col(position = "fill", width = 0.5, alpha = 0.6) +
+  geom_text(aes(label = n), position = "fill", vjust = 2.5) +
+  #geom_hline(yintercept = 0.5, size = 1, linetype = 3, color = "black") +
+  #geom_rangeframe() +
+  #theme_tufte(base_size = 18) +
+  #facet_wrap(~sc3_7_clusters, nrow = 1) +
+  scale_fill_manual(values = c("lightslategray", "firebrick3")) +
+  scale_y_continuous("Percentage per population", expand = c(0, 0), breaks = c(0.25, 0.5, 0.75, 1), labels = c("25%", "50%", "75%", "100%")) +
+  #scale_x_discrete(labels = c("Healthy" = "H", "Dystrophic" = "D")) +
+  theme_bw(base_size = 16) +
+  #coord_flip() +
+  #guides(fill = guide_legend(keywidth = 0.8, keyheight = 0.8)) +
+  theme(panel.border = element_blank(), axis.line = element_line(colour = "black", size = 0.5), axis.ticks.x = element_blank(),
+        panel.grid = element_blank(), axis.ticks.y = element_line(colour = "black", size = 0.5),
+        axis.text = element_text(colour = "black", size = 12), legend.title = element_blank(), legend.position = "right", 
+        axis.title.x = element_blank(), legend.text = element_text(size = 12),
+        strip.background = element_blank()) 
+ggsave("plots/fraction_genotype_ISC.pdf", dpi = 600, width = 6, height = 4)
+ggsave("plots/fraction_genotype_ISC.tiff", dpi = 600, width = 6, height = 4)
+```
+
+```{r fig.height=3.25, fig.width=3.25}
+library(scales)
+temp <- colData(sce[, sce$sc3_7_clusters == "ISC 1" | sce$sc3_7_clusters == "ISC 2" | sce$sc3_7_clusters == "ISC 3"]) %>%
+  as_tibble() %>%
+  group_by(sc3_7_clusters, genotype) %>%
+  tally()
+
+temp$sc3_7_clusters <- as.character(temp$sc3_7_clusters)
+temp$sc3_7_clusters <- factor(temp$sc3_7_clusters, levels = c("ISC 3", "ISC 2", "ISC 1"))
+
+temp %>%
+  ggplot(aes(x = genotype, y = n, fill = sc3_7_clusters)) +
+  geom_col(position = "fill", width = 0.8) +
+  geom_text(aes(label = n), position = "fill", vjust = 1.2) +
+  scale_fill_manual(values = rev(brewer.pal(3, "Set2"))) +
+  scale_y_continuous("Percentage per population", expand = c(0, 0), breaks = c(0.25, 0.5, 0.75, 1), labels = c("25%", "50%", "75%", "100%")) +
+  theme_bw(base_size = 14) +
+  #guides(fill = guide_legend(keywidth = 0.3, keyheight = 0.3, default.unit = "inch")) +
+  theme(panel.border = element_blank(), axis.line = element_line(colour = "black", size = 0.75), axis.ticks.x = element_blank(),
+        panel.grid = element_blank(), axis.ticks.y = element_line(colour = "black", size = 0.75),
+        axis.text.y = element_text(colour = "black", size = 11), legend.title = element_blank(), legend.position = "right", 
+        axis.title.x = element_blank(), legend.text = element_text(size = 14), axis.title.y = element_text(hjust = 1),
+        strip.background = element_blank(), axis.text.x = element_text(angle = 45, hjust = 1, colour = "black", size = 14)) 
+ggsave("plots/fraction_ISC_genotype.pdf", dpi = 600, width = 3.25, height = 3.25)
+ggsave("plots/fraction_ISC_genotype.tiff", dpi = 600, width = 3.25, height = 3.25)
+```
+
+
+
+## Plot known cell population marker
+### on tSNE
+tSNE marker genes
+```{r fig.height=2.5, fig.width=2}
+genes <- c("Ly6a", "Sox10", "Myl9", "Myf5", "Fmod", "Cd82", "Fgfr4", "Gdf10", "Thbs4", "Fbln7", "Alpl", "Itga7", "Peg3", "Pdgfra", "Pdgfrb", "Cd55",
+           "Plp1", "Acta2", "Pou3f1", "Vim")
+
+for (g in genes) {
+  print(plot_dims(sce, x = "Dim1", y = "Dim2", color = g, theme = 14, label_size = 14, point_size = 1.5, alpha = 1) +
+  #scale_color_gradientn(colors = rev(colorRampPalette(brewer.pal(n = 7, name =  "RdYlBu"))(7)), guide = guide_colorbar(title = "Log(Expr)", barwidth = 3, barheight = 0.8, ticks = FALSE, title.vjust = 1.05, label.hjust = 0.4)) +
+  #scale_color_gradientn(colors = colorRampPalette(magma(8)[2:7])(50), guide = guide_colorbar(barwidth = 5, barheight = 0.6, ticks = FALSE, label.position = "top", label.vjust = 1.5, direction = "horizontal"), limits = c(0, 16), breaks = c(0, 5, 10, 15)) +
+  scale_color_gradientn(colors = colorRampPalette(c('navyblue', 'violetred', "firebrick1", 'darkorange'))(100), guide = guide_colorbar(barwidth = 5, barheight = 0.6, ticks = FALSE, label.position = "top", label.vjust = 1, direction = "horizontal"), limits = c(0, 16), breaks = c(0, 5, 10, 15)) +
+  theme(legend.position = "bottom", legend.justification = c(0.5, 0.5), legend.title = element_blank()))
+ggsave(paste("plots/tSNE/", g, ".pdf", sep = ""), dpi = 600, height = 2.5, width = 2)
+ggsave(paste("plots/tSNE/", g, ".tiff", sep = ""), dpi = 600, height = 2.5, width = 2)
+}
+```
+
+##Plot tSNE of markers genes per cluster in cluster color
+```{r fig.height=2.5, fig.width=2}
+genes <- c("Cd55", "Gdf10", "Thbs4", "Fmod", "Myl9", "Myf5", "Sox10")
+
+for (i in 1:7) {
+  print(plot_dims(sce, x = "Dim1", y = "Dim2", color = genes[i], theme = 14, label_size = 14, point_size = 1.5, alpha = 1) +
+  #scale_color_gradientn(colors = rev(colorRampPalette(brewer.pal(n = 7, name =  "RdYlBu"))(7)), guide = guide_colorbar(title = "Log(Expr)", barwidth = 3, barheight = 0.8, ticks = FALSE, title.vjust = 1.05, label.hjust = 0.4)) +
+  #scale_color_gradientn(colors = colorRampPalette(magma(8)[2:7])(50), guide = guide_colorbar(barwidth = 5, barheight = 0.6, ticks = FALSE, label.position = "top", label.vjust = 1.5, direction = "horizontal"), limits = c(0, 16), breaks = c(0, 5, 10, 15)) +
+  scale_color_gradientn(colors = colorRampPalette(c('navyblue', 'violetred', "firebrick1", 'darkorange'))(100), guide = guide_colorbar(barwidth = 5, barheight = 0.6, ticks = FALSE, label.position = "top", label.vjust = 1, direction = "horizontal"), limits = c(0, 16), breaks = c(0, 5, 10, 15)) +
+  theme(legend.position = "bottom", legend.justification = c(0.5, 0.5), legend.title = element_blank(), strip.text = element_text(colour = RColorBrewer::brewer.pal(7, "Set2")[i])))
+ggsave(paste("plots/tSNE/", genes[i], ".pdf", sep = ""), dpi = 600, height = 2.5, width = 2)
+ggsave(paste("plots/tSNE/", genes[i], ".tiff", sep = ""), dpi = 600, height = 2.5, width = 2)
+}
+```
+
+### Plot violin
+Markers per population
+```{r fig.height=3, fig.width=3}
+genes <- c("Ly6a", "Cd55", "Cd34", "Pdgfra", "Gdf10", "Meox2", "Sdc1", "Thbs4", "Fbln7", "Mmp2", "Mmp14")
+
+for (g in genes) {
+  print(plot_expression(sce, var = g, group = "sc3_7_clusters", facet = "horizontal", theme = 16) +
+          stat_summary(fun.y = median, geom = "point", size = 4) +
+          scale_fill_brewer(type = "qual", palette = "Set2") +
+          scale_color_brewer(type = "qual", palette = "Set2") +
+          scale_y_continuous("Log(expression)", expand = c(0, 0)) +
+          theme(panel.border = element_blank(), strip.background = element_blank(), legend.position = "none", 
+            axis.line = element_line(colour = "black", size = 0.75), strip.text.x = element_text(size = 16),
+            axis.ticks.y = element_line(colour = "black", size = 0.75), axis.text = element_text(colour = "black"), 
+            axis.text.x = element_text(angle = 45, hjust = 1)))
+ggsave(paste("plots/expression/", g, ".pdf", sep =""), dpi = 600, width = 3, height = 3)
+ggsave(paste("plots/expression/", g, ".png", sep =""), dpi = 600, width = 3, height = 3)
+}
+```
+
+
+
+### Plot detected genes per cluster
+k = 4
+```{r fig.height=3, fig.width=4}
+ggplot(as_tibble(colData(sce)), aes(y = total_features, x = sc3_4_clusters, fill = sc3_4_clusters)) +
+  geom_boxplot(outlier.shape = NA) +
+  #ggbeeswarm::geom_quasirandom(width = 0.4, size = 2) +
+  scale_fill_brewer(type = "qual", palette = "Set2") +
+  #scale_color_brewer(type = "qual", palette = "Set2") +
+  scale_y_continuous("Number of genes per cell", expand = c(0, 0)) +
+  theme_bw(base_size = 14) +
+  theme(panel.border = element_blank(), strip.background = element_blank(), legend.position = "none", 
+        axis.line = element_line(colour = "black", size = 0.5), strip.text.x = element_text(size = 24), 
+        axis.ticks.y = element_line(colour = "black", size = 0.5), axis.text = element_text(colour = "black"), panel.grid = element_blank(),
+        axis.ticks.x = element_blank(), axis.title.x = element_blank())
+ggsave("plots/expression/detected_genes_k4.pdf", dpi = 600, width = 4, height = 3)
+ggsave("plots/expression/detected_genes_k4.tiff", dpi = 600, width = 4, height = 3)
+```
+
+k = 6
+```{r}
+ggplot(as_tibble(colData(sce)), aes(y = total_features, x = sc3_6_clusters, fill = sc3_6_clusters)) +
+  geom_boxplot(outlier.shape = NA) +
+  #ggbeeswarm::geom_quasirandom(width = 0.4, size = 2) +
+  scale_fill_brewer(type = "qual", palette = "Set2") +
+  #scale_color_brewer(type = "qual", palette = "Set2") +
+  scale_y_continuous("Number of genes per cell", expand = c(0, 0)) +
+  theme_bw(base_size = 14) +
+  theme(panel.border = element_blank(), strip.background = element_blank(), legend.position = "none", 
+        axis.line = element_line(colour = "black", size = 0.5), strip.text.x = element_text(size = 24), 
+        axis.ticks.y = element_line(colour = "black", size = 0.5), axis.text = element_text(colour = "black"), panel.grid = element_blank(),
+        axis.ticks.x = element_blank(), axis.title.x = element_blank(), axis.text.x = element_text(angle = 45, hjust = 1))
+ggsave("plots/expression/detected_genes_k6.pdf", dpi = 600, width = 4, height = 3)
+ggsave("plots/expression/detected_genes_k6.tiff", dpi = 600, width = 4, height = 3)
+```
+
+k = 7
+```{r fig.height=3, fig.width=8}
+ggplot(as_tibble(colData(sce)), aes(y = total_features, x = genotype, fill = sc3_7_clusters)) +
+  geom_boxplot(outlier.shape = NA) +
+  #ggbeeswarm::geom_quasirandom(width = 0.4, size = 2) +
+  facet_wrap(~sc3_7_clusters, nrow = 1) +
+  scale_fill_brewer(type = "qual", palette = "Set2") +
+  #scale_color_brewer(type = "qual", palette = "Set2") +
+  scale_y_continuous("Number of genes per cell", expand = c(0, 0)) +
+  scale_x_discrete(labels = c("Healthy" = "H", "Dystrophic" = "D")) +
+  theme_bw(base_size = 18) +
+  theme(panel.border = element_blank(), strip.background = element_blank(), legend.position = "right", legend.title = element_blank(),
+        axis.line = element_line(colour = "black", size = 1), strip.text.x = element_blank(), axis.text.x = element_text(size = 14), 
+        axis.ticks.y = element_line(colour = "black", size = 1), axis.text = element_text(colour = "black"), panel.grid = element_blank(),
+        axis.ticks.x = element_blank(), axis.title.x = element_blank(), legend.key.size = unit(2, "lines"), axis.title.y = element_text(hjust = 1))
+ggsave("plots/QC/detected_genes_k7.pdf", dpi = 600, width = 8, height = 3)
+ggsave("plots/QC/detected_genes_k7.tiff", dpi = 600, width = 8, height = 3)
+```
+
+## Bar plots of markers
+```{r fig.height=5, fig.width=5}
+sce_object = sce
+x = "sample_id" 
+color = "sc3_7_clusters" 
+genes = c("Ly6a", "Pdgfra", "Cd34", "Ly6c1", "Cd55", "Gdf10", "Meox2", "Thbs4", "Fbln7", "Tnmd", "Fmod", "Myl9", "Tpm2", "Cd82", "Myf5", "Plp1", "Sox10")
+shape = NA
+labels = NA 
+col_values = NA
+alpha = 1
+theme = 16
+label_size = 18
+nrow = NULL
+ncol = NULL
+
+        temp <- NULL
+        rowData <- NULL
+        colData <- NULL
+        #rowData <- t(data.frame(logcounts(sce_object)[color, ]))
+        for (gene in genes) {
+          if (gene %in% row.names(sce_object)) {
+            rowData[[gene]]  <- logcounts(sce_object)[gene, ]
+          }
+          else {
+            print(paste0(gene, " not expressed or written wrong!", sep = ""))
+          }
+        }
+        rowData <- data.frame(rowData)
+        colData <- data.frame(x = sce_object[[x]], group = sce_object[[color]])
+        temp <- cbind(rowData, colData)
+        temp <- tidyr::gather(temp, gene, logcounts, -x, -group)
+        temp$gene <- factor(temp$gene, levels = genes)
+        temp <- temp[order(temp$group), ]
+        temp$x <- factor(temp$x, levels = unique(temp$x))
+
+        ggplot(temp, aes(x = x, y = logcounts, fill = group)) +
+          #geom_point(size = point_size) +
+          stat_summary(fun.y = mean, geom = "bar", width = 1.5) +
+          facet_grid(gene ~ ., labeller = labeller(gene = labels), scales = "free", switch = "y") +
+          scale_y_continuous(position = "right", expand = c(0, 0)) +
+          #labs(x = x, y = y, color = group) +
+          #guides(color = guide_colorbar(barwidth = 8, barheight = 1, ticks = FALSE, title.vjust = c(1.3), title = "Logcounts")) +
+          #viridis::scale_color_viridis(option = "plasma", guide = guide_colourbar(ticks = FALSE)) +
+          scale_fill_brewer(type = "qual", palette = "Set2") +
+          theme_bw(base_size = theme) +
+          theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+                axis.text.x = element_blank(), axis.ticks = element_blank(), axis.text.y = element_text(size = 4), 
+                axis.title = element_blank(), axis.line = element_blank(), strip.background = element_blank(),
+                strip.text.y = element_text(angle = 180), legend.position = "none", panel.border = element_rect(colour = "black", size = 0.5))
+ggsave("plots/expression/markers_bar_plot.pdf", dpi = 600, width = 5, height = 5)
+ggsave("plots/expression/markers_bar_plot.tiff", dpi = 600, width = 5, height = 5)
+```
+
+
+## Plot heatmap
+SC3 functions
+```{r}
+make_col_ann_for_heatmaps <- function(object, show_pdata) {
+    if (any(!show_pdata %in% colnames(colData(object)))) {
+        show_pdata_excl <- show_pdata[!show_pdata %in% colnames(colData(object))]
+        show_pdata <- show_pdata[show_pdata %in% colnames(colData(object))]
+        message(paste0("Provided columns '", paste(show_pdata_excl, collapse = "', '"), "' do not exist in the phenoData table!"))
+        if (length(show_pdata) == 0) {
+            return(NULL)
+        }
+    }
+    ann <- NULL
+    if (is.null(metadata(object)$sc3$svm_train_inds)) {
+        ann <- colData(object)[, colnames(colData(object)) %in% show_pdata]
+    } else {
+        ann <- colData(object)[metadata(object)$sc3$svm_train_inds, colnames(colData(object)) %in% 
+            show_pdata]
+    }
+    # remove columns with 1 value only
+    if (length(show_pdata) > 1) {
+        keep <- unlist(lapply(ann, function(x) {
+            length(unique(x))
+        })) > 1
+        if (!all(keep)) {
+            message(paste0("Columns '", paste(names(keep)[!keep], collapse = "', '"), "' were excluded from annotation since they contained only a single value."))
+        }
+        ann <- ann[, names(keep)[keep]]
+        if (ncol(ann) == 0) {
+            ann <- NULL
+        } else {
+            ann <- as.data.frame(lapply(ann, function(x) {
+                if (nlevels(as.factor(x)) > 9) 
+                  x else as.factor(x)
+            }))
+            # convert outlier scores back to numeric
+            for (i in grep("_log2_outlier_score", colnames(ann))) {
+                if (class(ann[, i]) == "factor") {
+                  ann[, i] <- as.numeric(levels(ann[, i]))[ann[, i]]
+                }
+            }
+        }
+    } else {
+        if (length(unique(ann)) > 1) {
+            ann <- as.data.frame(ann)
+            colnames(ann) <- show_pdata
+            if (!grepl("_log2_outlier_score", show_pdata)) {
+                ann <- as.data.frame(lapply(ann, function(x) {
+                  if (nlevels(as.factor(x)) > 9) 
+                    return(x) else return(as.factor(x))
+                }))
+            }
+        } else {
+            message(paste0("Column '", show_pdata, "' was excluded from annotation since they contained only a single value."))
+            ann <- NULL
+        }
+    }
+    return(ann)
+}
+
+organise_marker_genes <- function(object, k, p_val, auroc) {
+    dat <- rowData(object)[, c(paste0("sc3_", k, "_markers_clusts"), paste0("sc3_", k, 
+        "_markers_auroc"), paste0("sc3_", k, "_markers_padj"), "feature_symbol")]
+    dat <- dat[dat[, paste0("sc3_", k, "_markers_padj")] < p_val & !is.na(dat[, paste0("sc3_", 
+        k, "_markers_padj")]), ]
+    dat <- dat[dat[, paste0("sc3_", k, "_markers_auroc")] > auroc, ]
+    
+    d <- NULL
+    
+    for (i in sort(unique(dat[, paste0("sc3_", k, "_markers_clusts")]))) {
+        tmp <- dat[dat[, paste0("sc3_", k, "_markers_clusts")] == i, ]
+        tmp <- tmp[order(tmp[, paste0("sc3_", k, "_markers_auroc")], decreasing = TRUE), ]
+        d <- rbind(d, tmp)
+    }
+    
+    return(d)
+}
+
+markers_for_heatmap <- function(markers) {
+    res <- NULL
+    for (i in unique(markers[, 1])) {
+        tmp <- markers[markers[, 1] == i, ]
+        if (nrow(tmp) > 10) {
+            res <- rbind(res, tmp[1:10, ])
+        } else {
+            res <- rbind(res, tmp)
+        }
+    }
+    
+    return(res)
+}
+```
+
+
+```{r}
+table(sce$sc3_7_clusters)
+```
+
+k = 7
+```{r fig.height=10, fig.width=10}
+#plot_markers_trial <- function(object, k, auroc = 0.85, p.val = 0.01, show_pdata = NULL) {
+  if (is.null(metadata(sce)$sc3$consensus)) {
+    warning(paste0("Please run sc3_consensus() first!"))
+    return(sce)
+  }
+  hc <- metadata(sce)$sc3$consensus[[as.character(7)]]$hc
+  hc <- dendextend::rotate(hc, c(256:145))
+  dataset <- get_processed_dataset(sce)
+  if (!is.null(metadata(sce)$sc3$svm_train_inds)) {
+    dataset <- dataset[, metadata(sce)$sc3$svm_train_inds]
+  }
+
+  add_ann_col <- FALSE
+  ann <- NULL
+  if (!is.null(sce$genotype)) {
+    ann <- make_col_ann_for_heatmaps(sce, c("sc3_7_clusters"))
+    if (!is.null(ann)) {
+      add_ann_col <- TRUE
+      # make same names for the annotation table
+      rownames(ann) <- colnames(dataset)
+    }
+  }
+
+  # get all marker genes
+  markers <- organise_marker_genes(sce, 7, 0.01, 0.8)
+  markers$sc3_7_markers_clusts <- factor(markers$sc3_7_markers_clusts, levels = c(1:3, rev(4:7)))
+  markers <- markers[order(markers$sc3_7_markers_clusts), ]
+  length(markers)
+  # get top 10 marker genes of each cluster
+  #markers <- markers_for_heatmap(markers)
+
+  row.ann <- data.frame(clust_num = factor(markers[, 1], levels = unique(markers[, 1])))
+  clust_names <- data.frame(clust_num = 1:7, Cluster = c("ISC 1", "ISC 2", "ISC 3", "Fibroblast", "SMC", "Satellite cell", "Schwann cell"))
+  row.ann <- merge(row.ann, clust_names, by = "clust_num")
+  row.ann <- row.ann["Cluster"]
+  #row.ann <- data.frame(Cluster = sce$sc3_6_clusters)
+  rownames(row.ann) <- markers$ feature_symbol
+
+  mat_colors <- list(sc3_7_clusters = brewer.pal(7, name = "Set2"), Cluster = brewer.pal(7, name = "Set2"))
+  names(mat_colors$sc3_7_clusters) <- unique(sce$sc3_7_clusters)[order(unique(sce$sc3_7_clusters))]
+  #names(mat_colors$genotype) <- unique(sce$genotype)[order(unique(sce$genotype))]
+  names(mat_colors$Cluster) <- unique(row.ann$Cluster)
+  #names(Cluster) <- c("FAP/MAB", "Satellite cells", "Schwann cells", "Smooth muscle cells")
+  #anno_colors <- list(Cluster = Cluster)
+  
+  #remove genes that are filtered out by gene filter
+  markers <- markers[-match(FALSE, markers$feature_symbol %in% row.names(dataset)), ]
+
+
+  do.call(pheatmap::pheatmap, c(list(dataset[markers$feature_symbol, , drop = FALSE],
+                                     color = colorRampPalette(rev(brewer.pal(n = 5, name = "RdYlBu")))(5),
+                                     show_colnames = FALSE,
+                                     show_rownames = TRUE,
+                                     cluster_rows = FALSE, 
+                                     cluster_cols = hc, 
+                                     cutree_cols = 7, 
+                                     annotation_row = NA, 
+                                     annotation_names_row = FALSE, 
+                                     annotation_names_col = FALSE,
+                                     gaps_row = which(diff(markers[, 1]) != 0), 
+                                     #cellheight = 10,
+                                     #cellwidth = 2,
+                                     treeheight_col = 0),
+                                     list(annotation_col = ann)[add_ann_col], 
+                                     list(annotation_colors = mat_colors, 
+                                     annotation_legend = TRUE,
+                                     fontsize = 3,
+                                     filename = "plots/heatmap/k7_with_genes.pdf")#,
+                                     #width = 8,
+                                     #height = 10
+                                     ))
+  
+    do.call(pheatmap::pheatmap, c(list(dataset[markers$feature_symbol, , drop = FALSE],
+                                     color = colorRampPalette(rev(brewer.pal(n = 5, name = "RdYlBu")))(5),
+                                     #color = viridis_pal(option = "C")(100), 
+                                     #color = wesanderson::wes_palette("Zissou1", 100, type = "continuous"),
+                                     #color = colorRampPalette(col_heatmap)(10),
+                                     show_colnames = FALSE,
+                                     show_rownames = FALSE,
+                                     cluster_rows = FALSE, 
+                                     cluster_cols = hc, 
+                                     cutree_cols = 7, 
+                                     annotation_row = NA, 
+                                     annotation_names_row = FALSE, 
+                                     annotation_names_col = FALSE,
+                                     #gaps_row = which(diff(markers[, 1]) != 0), 
+                                     cellheight = 3,
+                                     cellwidth = 2.5,
+                                     treeheight_col = 0),
+                                     list(annotation_col = ann)[add_ann_col], 
+                                     list(annotation_colors = mat_colors, 
+                                     annotation_legend = FALSE,
+                                     fontsize = 12,
+                                     filename = "plots/heatmap/k7_without_genes.tiff")#,
+                                     #width = 8,
+                                     #height = 10
+                                     ))
+#}
+```

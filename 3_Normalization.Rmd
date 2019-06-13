@@ -1,0 +1,243 @@
+---
+title: "Normalization"
+author: "Jordi Camps"
+date: "`r format(Sys.time(), '%d %B, %Y, %H:%M')`"
+output: html_document
+---
+
+```{r, warning=FALSE, message=FALSE}
+library(scRNA.seq.funcs)
+library(SingleCellExperiment)
+library(scater)
+library(scran)
+options(stringsAsFactors = FALSE)
+set.seed(1234567)
+reads_qc <- readRDS("data/reads_qc.rds")
+endog_genes <- !rowData(reads_qc)$is_feature_control
+```
+
+
+## Unnormalized PCA plot
+```{r}
+plotPCA(
+  reads_qc[endog_genes, ],
+  colour_by = "batch",
+  size_by = "total_features",
+  shape_by = "individual",
+  exprs_values = "logcounts_raw"
+)
+```
+
+## CPM
+```{r}
+logcounts(reads_qc) <- log2(calculateCPM(reads_qc, use_size_factors = FALSE) + 1)
+plotPCA(
+  reads_qc[endog_genes, ],
+  colour_by = "batch",
+  size_by = "total_features",
+  shape_by = "individual"
+)
+```
+
+```{r}
+plotRLE(
+  reads_qc[endog_genes, ], 
+  exprs_mats = list(Raw = "logcounts_raw", CPM = "logcounts"),
+  exprs_logged = c(TRUE, TRUE),
+  colour_by = "batch"
+)
+```
+
+
+## TMM
+```{r}
+reads_qc <- normaliseExprs(
+  reads_qc,
+  method = "TMM",
+  feature_set = endog_genes,
+  return_log = TRUE,
+  return_norm_as_exprs = TRUE
+)
+```
+
+```{r}
+plotPCA(
+  reads_qc[endog_genes, ],
+  colour_by = "batch",
+  size_by = "total_features",
+  shape_by = "individual"
+)
+```
+
+```{r}
+plotRLE(
+  reads_qc[endog_genes, ], 
+  exprs_mats = list(Raw = "logcounts_raw", TMM = "logcounts"),
+  exprs_logged = c(TRUE, TRUE),
+  colour_by = "batch"
+) 
+```
+
+
+## Scran
+### Compute size factors for genes and spike-ins
+```{r eval=FALSE, include=FALSE}
+reads_qc <- computeSumFactors(reads_qc, sizes = 2:10*10)
+reads_qc <- computeSpikeFactors(reads_qc, general.use = FALSE)
+summary(sizeFactors(reads_qc))
+plot(sizeFactors(reads_qc), reads_qc$total_counts)
+reads_qc <- normalize(reads_qc)
+```
+
+
+```{r}
+qclust <- quickCluster(reads_qc, min.size = 30)
+reads_qc <- computeSumFactors(reads_qc, cluster = qclust)
+reads_qc <- computeSpikeFactors(reads_qc, general.use = FALSE)
+summary(sizeFactors(reads_qc))
+plot(sizeFactors(reads_qc), reads_qc$total_counts/1e3, log = "xy", ylab = "Library size (thousands)", xlab = "Size factor")
+reads_qc <- normalize(reads_qc)
+```
+
+
+### Plot PCA
+```{r}
+plotPCA(
+  reads_qc[endog_genes, ],
+  colour_by = "batch",
+  size_by = "total_features",
+  shape_by = "individual"
+)
+```
+
+```{r}
+plotRLE(
+  reads_qc[endog_genes, ], 
+  exprs_mats = list(Raw = "logcounts_raw", Scran = "logcounts"),
+  exprs_logged = c(TRUE, TRUE),
+  colour_by = "batch"
+)
+```
+
+Scran is prefered method of normalization
+Save to RDS
+```{r}
+saveRDS(reads_qc, "data/reads_qc_scran.rds")
+```
+
+
+## Size-factor (RLE)
+### Calculate SF
+```{r}
+reads_qc <- normaliseExprs(
+  reads_qc,
+  method = "RLE", 
+  feature_set = endog_genes,
+  return_log = TRUE,
+  return_norm_as_exprs = TRUE
+)
+```
+
+```{r}
+plotPCA(
+  reads_qc[endog_genes, ],
+  colour_by = "batch",
+  size_by = "total_features",
+  shape_by = "individual"
+)
+```
+
+```{r}
+plotRLE(
+  reads_qc[endog_genes, ], 
+  exprs_mats = list(Raw = "logcounts_raw", SF  = "logcounts"),
+  exprs_logged = c(TRUE, TRUE),
+  colour_by = "batch"
+)
+```
+
+## Upperquantile
+```{r}
+reads_qc <- normaliseExprs(
+  reads_qc,
+  method = "upperquartile", 
+  feature_set = endog_genes,
+  p = 0.99,
+  return_log = TRUE,
+  return_norm_as_exprs = TRUE
+)
+```
+
+```{r}
+plotPCA(
+  reads_qc[endog_genes, ],
+  colour_by = "batch",
+  size_by = "total_features",
+  shape_by = "individual"
+) 
+```
+
+```{r}
+plotRLE(
+  reads_qc[endog_genes, ], 
+  exprs_mats = list(Raw = "logcounts_raw", UQ = "logcounts"),
+  exprs_logged = c(TRUE, TRUE),
+  colour_by = "batch"
+)
+```
+
+
+## Downsampling
+```{r}
+logcounts(reads_qc) <- log2(Down_Sample_Matrix(counts(reads_qc)) + 1)
+plotPCA(
+  reads_qc[endog_genes, ],
+  colour_by = "batch",
+  size_by = "total_features",
+  shape_by = "individual"
+)
+```
+
+```{r}
+plotRLE(
+  reads_qc[endog_genes, ], 
+  exprs_mats = list(Raw = "logcounts_raw", Downsampling = "logcounts"),
+  exprs_logged = c(TRUE, TRUE),
+  colour_by = "batch"
+)
+```
+
+
+## Normalization for gene/transcript length
+### Import and calculate transcript length per gene
+```{r}
+reads_qc_ann <- reads_qc[!is.na(rowData(reads_qc)$ensembl_gene_id), ]
+eff_length <- 
+  abs(rowData(reads_qc_ann)$transcript_end - rowData(reads_qc_ann)$transcript_start) / 1000
+plot(eff_length, rowMeans(counts(reads_qc_ann)))
+tpm(reads_qc_ann) <- log2(calculateTPM(reads_qc_ann, eff_length) + 1)
+fpkm(reads_qc_ann) <- log2(calculateFPKM(reads_qc_ann, eff_length) + 1)
+```
+
+### Plot PCA
+#### FPKM
+```{r}
+plotPCA(
+  reads_qc_ann,
+  colour_by = "batch",
+  size_by = "total_features",
+  shape_by = "individual",
+  exprs_values = "fpkm"
+)
+```
+
+#### TPM
+```{r}
+plotPCA(
+  reads_qc_ann,
+  colour_by = "batch",
+  size_by = "total_features",
+  shape_by = "individual",
+  exprs_values = "tpm"
+)
+```

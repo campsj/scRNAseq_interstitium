@@ -1,0 +1,50 @@
+---
+title: "Confounding factors"
+author: "Jordi Camps"
+date: "`r format(Sys.time(), '%d %B, %Y, %H:%M')`"
+output: html_document
+---
+
+# Load necessary packages
+```{r message=FALSE}
+library(scater)
+library(SingleCellExperiment)
+library(scTools)
+```
+
+# Identifying confounding factors
+## Load sce object
+```{r}
+reads_qc <- readRDS("data/reads_qc.rds")
+endog_genes <- !rowData(reads_qc)$is_feature_control
+```
+
+## Correlations with PCs
+### Plot PCA
+```{r}
+plotPCA(reads_qc[endog_genes, ], exprs_values = "logcounts_raw", colour_by = "batch", size_by = "total_features") +
+  ggtitle("Total reads")
+
+plotPCA(reads_qc[endog_genes, ], exprs_values = "logcounts_raw", colour_by = "batch", size_by = "total_counts") +
+  ggtitle("Total detected genes")
+```
+### Plot QC
+```{r}
+plotQC(reads_qc[endog_genes, ], type = "find-pcs", exprs_values = "logcounts_raw", variable = "total_features") +
+  ggtitle("Total detected genes")
+plotQC(reads_qc[endog_genes, ], type = "find-pcs", exprs_values = "logcounts_raw", variable = "total_counts") +
+  ggtitle("Total counts")
+```
+
+## Explanatory variables
+```{r}
+plotQC(
+    reads_qc[endog_genes, ], type = "expl", exprs_values = "logcounts_raw", variables = c(
+      "total_features",
+      "total_counts",
+      "batch",
+      "genotype",
+      "marker",
+      "pct_counts_ERCC",
+      "pct_counts_MT"))
+```
