@@ -1,0 +1,257 @@
+---
+title: "Healthy ISC"
+author: "Jordi Camps"
+date: "2018 M06 7"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(SC3)
+library(scater)
+library(SingleCellExperiment)
+library(scTools)
+```
+
+```{r}
+sce <- readRDS("data/reads_qc_scran_fap_sc3.rds")
+#sce$Cluster <- factor(sce$Cluster, levels = c("Cd55+", "Gdf10+", "Thbs4+"))
+#sce$genotype <- factor(sce$genotype, levels = c("Healthy", "Dystrophic"))
+sce <- sce[, sce$genotype == "Healthy"]
+sce
+```
+
+
+```{r}
+plotQC(sce, type = "find-pcs", variable = "batch")
+plotQC(sce, type = "find-pcs", variable = "total_features")
+plotQC(sce, type = "find-pcs", variable = "total_counts")
+```
+
+```{r}
+sce <- sce[, sce$total_features > 2500]
+```
+
+
+```{r}
+plotPCA(sce, ncomponents = 4)
+plotPCA(sce, colour_by = "Gdf10", ncomponents = 4)
+plotPCA(sce, colour_by = "Cd55", ncomponents = 4)
+plotPCA(sce, colour_by = "Ly6a", ncomponents = 4)
+```
+
+```{r}
+sce <- sc3_prepare(sce)
+sce <- sc3_estimate_k(sce)
+metadata(sce)$sc3$k_estimation
+sce <- sc3(sce, ks = 2:3, biology = TRUE, n_cores = 4)
+```
+
+```{r}
+sc3_interactive(sce)
+```
+
+```{r}
+sce = plotPCA(sce, ncomponents = 4, colour_by = "sc3_3_clusters", return_SCE = TRUE)
+sce$PC1 <- reducedDim(sce)[,1]
+sce$PC2 <- reducedDim(sce)[,2]
+sce$PC3 <- reducedDim(sce)[,3]
+sce$PC4 <- reducedDim(sce)[,4]
+```
+
+PCA GDF10-CD55
+```{r}
+plot_dims(sce, x = "PC2", y = "PC1", color = c("Cd55", "Gdf10")) +
+  viridis::scale_color_viridis(option = "plasma")
+ggsave("plots/ISC/PCA_Cd55_Gdf10.pdf", dpi = 600, width = 4, height = 2)
+```
+
+# SCORPIUS
+```{r}
+library(SCORPIUS)
+library(BiocGenerics)
+expression <- as.data.frame(t(logcounts(sce)))
+expression
+#group_name <- fap$genotype
+```
+
+```{r}
+dist <- correlation_distance(expression)
+dim(dist)
+plot(density(dist))
+```
+
+
+```{r}
+#reduce dimensionality
+library(ggplot2)
+space <- reduce_dimensionality(dist)
+draw_trajectory_plot(space)
+draw_trajectory_plot(space[, c(1, 3)]) + labs(y = "Component 3")
+draw_trajectory_plot(space[, c(2, 3)]) + labs(x = "Component 2", y = "Component 3")
+```
+
+Filter outliers
+```{r}
+filt <- outlier_filter(dist)
+expression <- expression[filt, ]
+#group_name <- group_name[filt]
+dist <- dist[filt, filt]
+```
+
+```{r}
+space <- reduce_dimensionality(dist)
+draw_trajectory_plot(space)
+```
+
+
+Infer trajectory
+```{r}
+traj <- infer_trajectory(space)
+draw_trajectory_plot(space, progression_group = group_name, path = traj$path)
+```
+
+## Finding candidate markers
+```{r}
+gimp <- gene_importances(expression, traj$time, num_permutations = 0, num_threads = 8)
+gene_sel <- gimp[1:50,]
+expr_sel <- expression[,gene_sel$gene]
+```
+
+```{r}
+traj <- infer_trajectory(expr_sel)
+```
+
+```{r}
+draw_trajectory_heatmap(expr_sel, traj$time, group_name)
+```
+
+```{r}
+modules <- extract_modules(scale_quantile(expr_sel), traj$time, verbose = F)
+draw_trajectory_heatmap(expr_sel, traj$time, group_name, modules)
+```
+
+
+# Monocle
+# Make newCellDataSet
+```{r}
+library(monocle)
+```
+
+
+```{r}
+cnts <- counts(sce)
+geneNames <- rownames(sce)
+colnames(cnts) <- 1:ncol(cnts)
+rownames(cnts) <- 1:nrow(cnts)
+pd <- data.frame(cell_id = colnames(sce))
+pd <- new("AnnotatedDataFrame", data=pd)
+fd <- data.frame(gene_short_name = geneNames, feature_id = rowData(sce)$feature_id)
+fd <- new("AnnotatedDataFrame", data=fd)
+
+cds <- newCellDataSet(cnts, phenoData = pd, featureData = fd, lowerDetectionLimit = 0.1, expressionFamily = tobit(Lower = 0.1))
+rpc_matrix <- relative2abs(cds, method = "num_genes")
+
+cds <- newCellDataSet(as(as.matrix(rpc_matrix), "sparseMatrix"),
+                phenoData = pd,
+                featureData = fd,
+                lowerDetectionLimit = 0.5,
+                expressionFamily = negbinomial.size())
+rownames(cds) <- fData(cds)$feature_id
+colnames(cds) <- pData(cds)$cell_id
+cds
+```
+
+```{r}
+cds <- estimateSizeFactors(cds)
+cds <- estimateDispersions(cds)
+```
+
+```{r}
+cds <- detectGenes(cds, min_expr = 0.1)
+print(head(fData(cds)))
+```
+
+```{r}
+cds <- detectGenes(cds, min_expr = 0.1)
+print(head(fData(cds)))
+expressed_genes <- row.names(subset(fData(cds),
+    num_cells_expressed >= 10))
+```
+
+```{r}
+print(head(pData(cds)))
+```
+
+```{r}
+pData(cds)$Total_mRNAs <- Matrix::colSums(exprs(cds))
+
+cds <- cds[,pData(cds)$Total_mRNAs < 1e6]
+
+upper_bound <- 10^(mean(log10(pData(cds)$Total_mRNAs)) +
+            2*sd(log10(pData(cds)$Total_mRNAs)))
+lower_bound <- 10^(mean(log10(pData(cds)$Total_mRNAs)) -
+            2*sd(log10(pData(cds)$Total_mRNAs)))
+
+qplot(Total_mRNAs, data = pData(cds), geom =
+"density") +
+geom_vline(xintercept = lower_bound) +
+geom_vline(xintercept = upper_bound)
+```
+
+```{r}
+cds <- cds[,pData(cds)$Total_mRNAs > lower_bound &
+      pData(cds)$Total_mRNAs < upper_bound]
+cds <- detectGenes(cds, min_expr = 0.1)
+```
+
+```{r}
+# Log-transform each value in the expression matrix.
+L <- log(exprs(cds[expressed_genes,]))
+
+# Standardize each gene, so that they are all on the same scale,
+# Then melt the data with plyr so we can plot it easily
+melted_dens_df <- reshape2::melt(Matrix::t(scale(Matrix::t(L))))
+
+# Plot the distribution of the standardized gene expression values.
+qplot(value, geom = "density", data = melted_dens_df) +
+stat_function(fun = dnorm, size = 0.5, color = 'red') +
+xlab("Standardized log(FPKM)") +
+ylab("Density")
+```
+
+
+# Constructing single-cell trajectory
+```{r}
+diff_test_res <- differentialGeneTest(cds[expressed_genes,],
+              fullModelFormulaStr = "~genotype")
+ordering_genes <- row.names(subset(diff_test_res, qval < 0.1))
+```
+
+```{r}
+cds_fap <- setOrderingFilter(cds_fap, ordering_genes)
+plot_ordering_genes(cds_fap)
+```
+
+```{r}
+library(DDRTree)
+cds_fap <- reduceDimension(cds_fap, max_components = 2,
+    method = 'DDRTree')
+```
+
+```{r}
+cds_fap <- orderCells(cds_fap, reverse = TRUE)
+```
+
+
+```{r}
+p <- plot_cell_trajectory(cds_fap, color_by = "genotype", cell_size = 4, cell_link_size = 1) +
+  scale_x_reverse() +
+  theme_void() +
+  scale_color_tableau() +
+  theme(text = element_text(size = 20), legend.position = "top", legend.title = element_blank())
+p + ggsave("plots/pseudotime/FAP/genotype.tiff", width = 10, height = 11, units = "cm")
+```
+
+
+

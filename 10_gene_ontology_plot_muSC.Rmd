@@ -1,0 +1,69 @@
+---
+title: "Gene ontology"
+author: "Jordi Camps"
+date: "2018 M05 2"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+```
+
+## Import text files
+```{r}
+go_1 = read.delim("tables/muSC/GO_Biological_Process_2018_table_QmuSC.txt", header = TRUE)
+go_2 = read.delim("tables/muSC/GO_Biological_Process_2018_table_AmuSC.txt", header = TRUE)
+go_3 = read.delim("tables/muSC/GO_Biological_Process_2018_table_Myoblast.txt", header = TRUE)
+head(go_1)
+```
+
+## Add column specifying type of cluster
+```{r}
+go_1$Cluster <- "Quiescent_muSC"
+go_2$Cluster <- "Activated_muSC"
+go_3$Cluster <- "Myoblast"
+```
+
+## Bind dataframes together
+```{r}
+go <- rbind(go_1, go_2, go_3)
+```
+
+## Separate GO term and create Term and cluster column for factorization
+```{r}
+go <- go %>%
+  tidyr::separate(Term, c("Term", "Number"), sep = "[(]")
+```
+
+## Select only op 5 terms per  cluster and order by Combined score
+```{r}
+p <- tbl_df(go) %>%
+  group_by(Cluster) %>%
+  top_n(n = 5, wt = Combined.Score) %>%
+  ungroup() %>%
+  arrange(Cluster, desc(Combined.Score)) %>%
+  mutate(order = row_number())
+```
+
+## Plot
+```{r fig.height=4, fig.width=6.25}
+p %>%
+ggplot(aes(y = Combined.Score, x = rev(order), fill = Cluster)) +
+  geom_col(width = 0.8) + 
+  #geom_hline(yintercept = 1.3, color = "red", size = 1) +
+  #scale_x_discrete(labels = rev(go$Term)) +
+  scale_fill_manual(values = c("#fdc086", "#beaed4", "#7fc97f")) +
+  scale_x_continuous(breaks = p$order, labels = rev(p$Term), expand = c(0, 0)) +
+  facet_wrap(~Cluster, ncol = 1, scales = "free_y") +
+  coord_flip() +
+  scale_y_continuous("Combined score", position = "left", expand = c(0, 0)) +
+  theme_bw(base_size = 16) +
+  theme(panel.border = element_blank(), panel.grid = element_blank(), axis.title.y = element_blank(), 
+        axis.title.x = element_text(hjust = 1, size = 11),
+        axis.ticks.y = element_blank(), axis.line = element_line(color = "black"), axis.text = element_text(color = "black", size = 11),
+        axis.ticks.x = element_line(color = "black"), axis.text.y = element_text(hjust = 1, vjust = 0.3), strip.background = element_blank(),
+        legend.position = "none", strip.text = element_blank())
+ggsave("plots/musc/GO/GO_biol_musc.pdf.pdf", dpi = 600, width = 6.25, height = 4)
+```

@@ -1,0 +1,37 @@
+---
+title: "Clustering healthy cells"
+author: "Jordi Camps"
+date: "2018 M05 29"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(SingleCellExperiment)
+library(scTools)
+library(scater)
+library(SC3)
+set.seed(1234567)
+```
+
+```{r}
+sce <- readRDS("data/reads_qc_scran_ISC_sc3.rds")
+sce <- sce[, sce$genotype == "Healthy"]
+```
+
+```{r}
+sce <- sc3_prepare(sce)
+sce <- sc3_estimate_k(sce)
+metadata(sce)$sc3$k_estimation
+sce <- sc3(sce, ks = 3, biology = TRUE, n_cores = 1)
+```
+
+```{r}
+sc3_interactive(sce)
+```
+
+```{r}
+plot_expression(sce, var = "F3", group = "sc3_3_clusters")
+```
+

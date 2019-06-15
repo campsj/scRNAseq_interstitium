@@ -1,0 +1,587 @@
+---
+title: "Plots clustering on ISCs"
+author: "Jordi Camps"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: html_document
+---
+
+```{r message=FALSE}
+library(SingleCellExperiment)
+library(scater)
+library(scTools)
+library(edgeR)
+library(ggthemes)
+library(ggExtra)
+library(SC3)
+library(ggplot2)
+library(dplyr)
+library(scran)
+library(viridis)
+library(RColorBrewer)
+set.seed(1234567)
+```
+
+## Load clustering file
+```{r}
+sce <- readRDS("data/reads_qc_scran_ISC_SC3.rds")
+sce
+```
+
+## Define colors
+```{r}
+library(RColorBrewer)
+col_k3 <- brewer.pal(3, "Set2")
+#col_k5 <- brewer.pal(5, "Set1")
+col_k5 <- c("#66c2a5", "#fc8d62", "#76BAFF", "#785ECC", "#AD54B2")
+#alternative colors: "#55B270", "#FF9B55",
+col_genotype <- c("lightslategrey", "firebrick3")
+```
+
+## Plot clusters on PCA
+```{r fig.height=4, fig.width=5}
+reducedDim(sce) <- NULL
+plotPCA(sce, ncomponents = 4, colour_by = "sc3_3_clusters")
+plotPCA(sce, ncomponents = 4, colour_by = "sc3_4_clusters")
+plotPCA(sce, ncomponents = 4, colour_by = "sc3_5_clusters")
+```
+
+## QC on  clusters
+### Load functions
+```{r}
+make_col_ann_for_heatmaps <- function(object, show_pdata) {
+    if (any(!show_pdata %in% colnames(colData(object)))) {
+        show_pdata_excl <- show_pdata[!show_pdata %in% colnames(colData(object))]
+        show_pdata <- show_pdata[show_pdata %in% colnames(colData(object))]
+        message(paste0("Provided columns '", paste(show_pdata_excl, collapse = "', '"), "' do not exist in the phenoData table!"))
+        if (length(show_pdata) == 0) {
+            return(NULL)
+        }
+    }
+    ann <- NULL
+    if (is.null(metadata(object)$sc3$svm_train_inds)) {
+        ann <- colData(object)[, colnames(colData(object)) %in% show_pdata]
+    } else {
+        ann <- colData(object)[metadata(object)$sc3$svm_train_inds, colnames(colData(object)) %in% 
+            show_pdata]
+    }
+    # remove columns with 1 value only
+    if (length(show_pdata) > 1) {
+        keep <- unlist(lapply(ann, function(x) {
+            length(unique(x))
+        })) > 1
+        if (!all(keep)) {
+            message(paste0("Columns '", paste(names(keep)[!keep], collapse = "', '"), "' were excluded from annotation since they contained only a single value."))
+        }
+        ann <- ann[, names(keep)[keep]]
+        if (ncol(ann) == 0) {
+            ann <- NULL
+        } else {
+            ann <- as.data.frame(lapply(ann, function(x) {
+                if (nlevels(as.factor(x)) > 9) 
+                  x else as.factor(x)
+            }))
+            # convert outlier scores back to numeric
+            for (i in grep("_log2_outlier_score", colnames(ann))) {
+                if (class(ann[, i]) == "factor") {
+                  ann[, i] <- as.numeric(levels(ann[, i]))[ann[, i]]
+                }
+            }
+        }
+    } else {
+        if (length(unique(ann)) > 1) {
+            ann <- as.data.frame(ann)
+            colnames(ann) <- show_pdata
+            if (!grepl("_log2_outlier_score", show_pdata)) {
+                ann <- as.data.frame(lapply(ann, function(x) {
+                  if (nlevels(as.factor(x)) > 9) 
+                    return(x) else return(as.factor(x))
+                }))
+            }
+        } else {
+            message(paste0("Column '", show_pdata, "' was excluded from annotation since they contained only a single value."))
+            ann <- NULL
+        }
+    }
+    return(ann)
+}
+```
+
+### Consensus plot
+```{r fig.height=5, fig.width=7}
+#png("plots/QC/consensus_k7.png", width = 6, height = 5, res = 600)
+k = 5
+object = sce
+show_pdata = "sc3_5_clusters"
+
+    hc <- metadata(object)$sc3$consensus[[as.character(k)]]$hc
+    #hc <- dendextend::rotate(hc, c(256:145))
+    consensus <- metadata(object)$sc3$consensus[[as.character(k)]]$consensus
+    
+    add_ann_col <- FALSE
+    ann <- NULL
+    if (!is.null(show_pdata)) {
+        ann <- make_col_ann_for_heatmaps(object, show_pdata)
+        if (!is.null(ann)) {
+            add_ann_col <- TRUE
+            # make same names for the annotation table
+            rownames(ann) <- colnames(consensus)
+        }
+    mat_colors <- list(sc3_5_clusters = col_k5)
+    names(mat_colors$sc3_5_clusters) <- unique(sce$sc3_5_clusters)[order(unique(sce$sc3_5_clusters))]
+    }
+    pheatmap::pheatmap(mat = consensus, color = colorRampPalette(rev(brewer.pal(n = 5, name =
+"RdYlBu")))(100), cluster_rows = hc, cluster_cols = hc, show_rownames = FALSE, show_colnames = FALSE, treeheight_row = 0, treeheight_col = 0, annotation_names_col = FALSE, legend_breaks = c(0, 1), annotation_col = ann[add_ann_col], annotation_colors = mat_colors, fontsize = 14, annotation_legend = FALSE, filename = "plots/QC/ISC/consensus_k5.tiff", width = 4, height = 4)
+```
+
+Cluster stability
+```{r}
+SC3::sc3_plot_cluster_stability(object = sce, k = 5)
+```
+
+Silhouette plot
+```{r fig.height=5, fig.width=6}
+pdf("plots/QC/ISC/silhouette_k5.pdf", width = 3.5, height = 3.5)
+plot(metadata(sce)$sc3$consensus$`5`$silhouette, col = col_k5)
+dev.off()
+```
+
+Export PCA dims
+```{r fig.height=4, fig.width=5}
+reducedDim(sce) <- NULL
+sce = plotPCA(sce, ncomponents = 4, colour_by = "sc3_5_clusters", return_SCE = TRUE)
+sce$PC1 <- reducedDim(sce)[,1]
+sce$PC2 <- reducedDim(sce)[,2]
+sce$PC3 <- reducedDim(sce)[,3]
+sce$PC4 <- reducedDim(sce)[,4]
+```
+
+PCA on genotype
+```{r fig.height=3, fig.width=2.5}
+#genotype by PC1
+plot_dims(sce_object = sce, x = "PC1", y = "PC2", color = "genotype", point_size = 3, alpha = 1, theme = 14) +
+  #labs(x = "Principal component 1", y = "Principal component 2") +
+  scale_color_manual("changed legend", values = c(Healthy = "#4e79a7", Dystrophic = "#f28e2b"), 
+                       labels = c(Healthy = "Healthy", Dystrophic = "Dystrophic")) +
+  #scale_shape_manual("changed legend", values = c(Healthy = 16, Dystrophic = 17), labels = c(Healthy = "Healthy", Dystrophic = "Dystrophic")) +
+  guides(shape = FALSE) +
+  theme(legend.position = "top", legend.title = element_blank())
+ggsave("plots/ISC/ISC_PCA_genotype.pdf", dpi = 600, width = 2.5, height = 3)
+ggsave("plots/ISC/ISC_PCA_genotype.tiff", dpi = 600, width = 2.5, height = 3)
+```
+
+### ISC1, ISC2 and ISC3
+```{r fig.height=2.5, fig.width=3.5}
+plot_dims(sce_object = sce, x = "PC1", y = "PC2", color = "Cluster", point_size = 3, alpha = 1, theme = 14) +
+  theme(legend.position = "right", legend.title = element_blank()) +
+  scale_color_brewer(type = "qual", palette = "Set2") +
+  guides(shape = FALSE) +
+ggsave("plots/ISC/ISC1_2_3.pdf", dpi = 600, width = 3.5, height = 2.5)
+ggsave("plots/ISC/ISC1_2_3.tiff", dpi = 600, width = 3.5, height = 2.5)
+```
+
+### PCA on k=5
+Set names k5
+```{r}
+sce$sc3_5_clusters <- plyr::revalue(sce$sc3_5_clusters, c("1" = "ISC 3c", "2" = "ISC 3a", "3" = "ISC 3b", "4" = "ISC 1", "5" = "ISC 2"))
+sce$sc3_5_clusters <- factor(sce$sc3_5_clusters, levels = c("ISC 1", "ISC 2", "ISC 3a", "ISC 3b", "ISC 3c"))
+```
+
+
+PC1-2
+```{r fig.height=2, fig.width=3}
+#healthy clusters by PC2
+plot_dims(sce_object = sce, x = "PC1", y = "PC2", color = "sc3_5_clusters", point_size = 3, alpha = 1, theme = 12) +
+  theme(legend.position = "right", legend.title = element_blank(), axis.line = element_line(size = 1, colour = "black")) +
+  #scale_color_brewer(type = "qual", palette = "Set1") +
+  scale_color_manual(values = col_k5) +
+  guides(shape = FALSE)
+ggsave("plots/ISC/ISC_PCA_k5_PC1_PC2.pdf", dpi = 600)
+ggsave("plots/ISC/ISC_PCA_k5_PC1_PC2.tiff", dpi = 600)
+```
+
+PC1-3
+```{r fig.height=2.5, fig.width=3.5}
+#Dystrophic clusters by PC3
+plot_dims(sce_object = sce, x = "PC1", y = "PC3", color = "sc3_5_clusters", point_size = 3, alpha = 1, theme = 14) +
+  #scale_color_brewer(type = "qual", palette = "Set1") +
+  scale_color_manual(values = col_k5) +
+  theme(legend.position = "right", legend.title = element_blank()) +
+  guides(shape = FALSE)
+ggsave("plots/ISC/ISC_PCA_k5_PC1_PC3.pdf", dpi = 600, width = 3.5, height = 2.5)
+ggsave("plots/ISC/ISC_PCA_k5_PC1_PC3.tiff", dpi = 600, width = 3.5, height = 2.5)
+```
+
+PC2-3
+```{r fig.height=2.5, fig.width=3.5}
+#Healthy and dystrophic by PC2 and PC3
+plot_dims(sce_object = sce, x = "PC2", y = "PC3", color = "sc3_5_clusters", point_size = 3, alpha = 1, theme = 14) +
+  #scale_color_brewer(type = "qual", palette = "Set1") +
+  scale_color_manual(values = col_k5) +
+  theme(legend.position = "right", legend.title = element_blank()) +
+  guides(shape = FALSE)
+ggsave("plots/ISC/ISC_PCA_k5_PC2_PC3.pdf", dpi = 600, width = 3.5, height = 2.5)
+ggsave("plots/ISC/ISC_PCA_k5_PC2_PC3.tiff", dpi = 600, width = 3.5, height = 2.5)
+```
+
+PC1-4
+```{r fig.height=2.5, fig.width=3.5}
+#Mixed cluster by PC4
+plot_dims(sce_object = sce, x = "PC1", y = "PC4", color = "sc3_5_clusters", point_size = 3, alpha = 1, theme = 14) +
+  #scale_color_brewer(type = "qual", palette = "Set1") +
+  scale_color_manual(values = col_k5) +
+  theme(legend.position = "right", legend.title = element_blank()) +
+  guides(shape = FALSE)
+ggsave("plots/ISC/ISC_PCA_k5_PC1_PC4.pdf", dpi = 600, width = 3.5, height = 2.5)
+ggsave("plots/ISC/ISC_PCA_k5_PC1_PC4.tiff", dpi = 600, width = 3.5, height = 2.5)
+```
+
+### 3D scatterplot
+```{r eval=FALSE, include=FALSE}
+require(rgl)
+require(RColorBrewer)
+plot3d(sce$PC1, sce$PC2, sce$PC3, xlab = "Principal component 1", ylab = "Principal component 2", zlab = "Principal component 3",
+       col = brewer.pal(5, "Set1")[unclass(sce$sc3_5_clusters)], size = 12)
+```
+
+genotype per cluster
+```{r fig.height=2.75, fig.width=2.25}
+#sce$sc3_5_clusters <- factor(sce$sc3_5_clusters, levels = c(1, 3, 2, 5, 4))
+library(scales)
+colData(sce) %>%
+  as_tibble() %>%
+  ggplot(aes(x = sc3_5_clusters, fill = genotype)) +
+  geom_bar(aes(y = (..count..)/sum(..count..)), position = "fill", width = 0.8, alpha = 1) +
+  #geom_hline(yintercept = 0.5, size = .5, linetype = 2, alpha = 0.6) +
+  #coord_flip() +
+  scale_fill_manual(values = col_genotype) +
+  scale_y_continuous("Percentage per population", breaks = c(0.25, 0.5, 0.75, 1), expand = c(0, 0), labels = c("25%", "50%", "75%", "100%")) +
+  scale_x_discrete("Clustering on ISC") +
+  #guides(fill = guide_legend(keyheight = 0.8, keywidth = 0.8)) +
+  #labs(fill = "Clustering\non Lin-") +
+  theme_bw(base_size = 12) +
+  theme(panel.border = element_blank(), axis.line = element_line(colour = "black", size = 1), axis.ticks.x = element_blank(),
+        panel.grid = element_blank(), axis.ticks.y = element_line(colour = "black", size = 1), legend.title = element_blank(),
+        axis.text = element_text(colour = "black"), legend.position = "top", axis.title.x = element_blank(), 
+        axis.text.x = element_text(angle = 90, vjust = 0.3, hjust = 1), axis.title.y = element_text(hjust = .5))
+ggsave("plots/ISC/fraction_genotype_k5.pdf", dpi = 600)
+ggsave("plots/ISC/fraction_genotype_k5.tiff", dpi = 600)
+```
+
+cluster per genotype
+```{r fig.height=2.5, fig.width=3}
+#sce$sc3_5_clusters <- factor(sce$sc3_5_clusters, levels = c(1, 3, 2, 5, 4))
+library(scales)
+colData(sce) %>%
+  as_tibble() %>%
+  ggplot(aes(x = genotype, fill = sc3_5_clusters)) +
+  geom_bar(aes(y = (..count..)/sum(..count..)), position = "fill", width = 0.7) +
+  #geom_hline(yintercept = 0.5, size = .5, linetype = 2, alpha = 0.6) +
+  #coord_flip() +
+  scale_fill_manual(values = col_k5) +
+  scale_y_continuous("Percentage per population", breaks = c(0.25, 0.5, 0.75, 1), expand = c(0, 0), labels = c("25%", "50%", "75%", "100%")) +
+  scale_x_discrete("Cluster") +
+  guides(fill = guide_legend(keyheight = 0.7, keywidth = 0.7)) +
+  theme_bw(base_size = 12) +
+  theme(panel.border = element_blank(), axis.line = element_line(colour = "black", size = 0.5), axis.ticks.x = element_blank(),
+        panel.grid = element_blank(), axis.title.x = element_blank(), axis.ticks.y = element_line(colour = "black", size = 0.5),
+        axis.text = element_text(colour = "black"), legend.title = element_blank(), legend.position = "right", 
+        axis.text.x = element_text(angle = 45, hjust = 1))
+ggsave("plots/ISC/fraction_clusters_per_genotype_k5.pdf", dpi = 600, width = 3.5, height = 2.5)
+ggsave("plots/ISC/fraction_clusters_per_genotype_k5.tiff", dpi = 600, width = 3.5, height = 2.5)
+```
+
+ISC 1, 2 and 3 in k=5
+```{r fig.height=2.25, fig.width=3.25}
+library(scales)
+colData(sce) %>%
+  as_tibble() %>%
+  ggplot(aes(fill = sc3_5_clusters, x = Cluster)) +
+  geom_bar(aes(y = ..count..), width = 0.8) +
+  #geom_hline(yintercept = 0.5, size = 1.5, linetype = 3) +
+  #coord_flip() +
+  scale_fill_manual(values = col_k5) +
+  scale_y_continuous("Number of cells per cluster", expand = c(0, 0), breaks = c(25, 50, 75)) +
+  scale_x_discrete("Clustering on Lin-") +
+  #guides(fill = guide_legend(keyheight = 0.8, keywidth = 0.8)) +
+  labs(fill = "Clustering\non ISC") +
+  theme_bw(base_size = 12) +
+  theme(panel.border = element_blank(), axis.line = element_line(colour = "black", size = 1), axis.ticks.x = element_blank(),
+        panel.grid = element_blank(), axis.ticks.y = element_line(colour = "black", size = 1),
+        axis.text = element_text(colour = "black"), legend.position = "right", axis.title.y = element_text(hjust = 1))
+ggsave("plots/ISC/fraction_ISC1-3_in_k5.pdf", dpi = 600)
+ggsave("plots/ISC/fraction_ISC1-3_in_k5.tiff", dpi = 600)
+```
+
+
+Genes for dystrophic clusters
+```{r fig.height=2.5, fig.width=2.5}
+plot_expression(sce, var = c("Pparg", "Fabp4", "Adipoq"), group = "Cluster", facet = "vertical", theme = 14) +
+  stat_summary(fun.y = median, geom = "point", size = 2) +
+  scale_fill_manual(values = col_k3) +
+  scale_color_manual(values = col_k3) +
+  scale_y_continuous("Log(expression)", expand = c(0, 0)) +
+  theme(panel.border = element_blank(), strip.background = element_blank(), legend.position = "none", 
+        axis.line = element_line(colour = "black", size = 0.5), strip.text.x = element_text(size = 12),
+        axis.ticks.y = element_line(colour = "black", size = 0.5), axis.text.y = element_text(colour = "black", size = 10), 
+        axis.text.x = element_text(colour = "black", size = 11, angle = 45, hjust = 1))
+ggsave("plots/ISC/adipo_genes.pdf", dpi = 600, height = 2.5, width = 2.5)
+```
+
+
+
+
+### Plot genes per cluster with violin plot
+#### Markers for ISC2
+```{r fig.height=3, fig.width=3}
+plot_expression(sce, var = c("Gdf10", "Cpe", "F3"), group = "sc3_5_clusters", facet = "vertical", theme = 12, scale = "width") +
+  stat_summary(fun.y = median, geom = "point", size = 2) +
+  scale_fill_manual(values = col_k5) +
+  scale_color_manual(values = col_k5) +
+  scale_y_continuous("Log(expression)", expand = c(0, 0)) +
+  theme(panel.border = element_blank(), strip.background = element_blank(), legend.position = "none", 
+        axis.line = element_line(colour = "black", size = 0.5), strip.text.x = element_text(size = 12),
+        axis.ticks.y = element_line(colour = "black", size = 0.5), axis.text.y = element_text(colour = "black", size = 8), 
+        axis.text.x = element_text(colour = "black", size = 10, angle = 45, hjust = 1))
+ggsave("plots/ISC/markers_ISC2_k5.pdf", dpi = 600, width = 3, height = 3)
+ggsave("plots/ISC/markers_ISC2_k5.tiff", dpi = 600, width = 3, height = 3)
+```
+
+```{r fig.height=3, fig.width=3}
+plot_expression(sce, var = c("Gdf10", "Cpe", "F3"), group = "Cluster", facet = "vertical", theme = 12) +
+  stat_summary(fun.y = median, geom = "point", size = 2) +
+  scale_fill_manual(values = col_k3) +
+  scale_color_manual(values = col_k3) +
+  scale_y_continuous("Log(expression)", expand = c(0, 0)) +
+  theme(panel.border = element_blank(), strip.background = element_blank(), legend.position = "none", 
+        axis.line = element_line(colour = "black", size = 0.5), strip.text.x = element_text(size = 14),
+        axis.ticks.y = element_line(colour = "black", size = 0.5), axis.text = element_text(colour = "black", size = 8), 
+        axis.text.x = element_text(colour = "black", size = 12, angle = 45, hjust = 1))
+ggsave("plots/ISC/markers_ISC2_k3.pdf", dpi = 600, width = 3, height = 3)
+ggsave("plots/ISC/markers_ISC2_k3.tiff", dpi = 600, width = 3, height = 3)
+```
+
+
+#### ISC1 markers
+```{r fig.height=3, fig.width=3}
+plot_expression(sce, var = c("Cd55", "Anxa3", "F3"), group = "sc3_5_clusters", facet = "vertical", theme = 12) +
+  stat_summary(fun.y = median, geom = "point", size = 2) +
+  scale_fill_manual(values = col_k5) +
+  scale_color_manual(values = col_k5) +
+  scale_y_continuous("Log(expression)", expand = c(0, 0)) +
+  theme(panel.border = element_blank(), strip.background = element_blank(), legend.position = "none", 
+        axis.line = element_line(colour = "black", size = 0.5), strip.text.x = element_text(size = 14),
+        axis.ticks.y = element_line(colour = "black", size = 0.5), axis.text.y = element_text(colour = "black", size = 8), 
+        axis.text.x = element_text(colour = "black", size = 10, angle = 45, hjust = 1))
+ggsave("plots/ISC/markers_ISC1_k5.pdf", dpi = 600, width = 3, height = 3)
+ggsave("plots/ISC/markers_ISC1_k5.tiff", dpi = 600, width = 3, height = 3)
+```
+
+```{r fig.height=3, fig.width=3}
+plot_expression(sce, var = c("Cd55", "Anxa3"), group = "Cluster", facet = "vertical", theme = 12) +
+  stat_summary(fun.y = median, geom = "point", size = 2) +
+  scale_fill_manual(values = col_k3) +
+  scale_color_manual(values = col_k3) +
+  scale_y_continuous("Log(expression)", expand = c(0, 0)) +
+  theme(panel.border = element_blank(), strip.background = element_blank(), legend.position = "none", 
+        axis.line = element_line(colour = "black", size = 0.5), strip.text.x = element_text(size = 14),
+        axis.ticks.y = element_line(colour = "black", size = 0.5), axis.text.y = element_text(colour = "black", size = 8), 
+        axis.text.x = element_text(colour = "black", size = 10, angle = 45, hjust = 1))
+ggsave("plots/ISC/markers_ISC1.pdf", dpi = 600, width = 3, height = 3)
+ggsave("plots/ISC/markers_ISC1.tiff", dpi = 600, width = 3, height = 3)
+```
+
+#### Markers ISC3
+```{r fig.height=3, fig.width=3}
+plot_expression(sce, var = c("Thbs4", "Fbln7", "Sdc1"), group = "sc3_5_clusters", facet = "vertical", theme = 12) +
+  stat_summary(fun.y = median, geom = "point", size = 2) +
+  scale_fill_manual(values = col_k5) +
+  scale_color_manual(values = col_k5) +
+  scale_y_continuous("Log(expression)", expand = c(0, 0)) +
+  theme(panel.border = element_blank(), strip.background = element_blank(), legend.position = "none", 
+        axis.line = element_line(colour = "black", size = 0.5), strip.text.x = element_text(size = 14),
+        axis.ticks.y = element_line(colour = "black", size = 0.5), axis.text.y = element_text(colour = "black", size = 8),
+        axis.text.x = element_text(colour = "black", size = 10, angle = 45, hjust = 1))
+ggsave("plots/ISC/markers_ISC3_k5.pdf", dpi = 600, width = 3, height = 3)
+ggsave("plots/ISC/markers_ISC3_k5.tiff", dpi = 600, width = 3, height = 3)
+```
+
+```{r fig.height=3, fig.width=3}
+plot_expression(sce, var = c("Thbs4", "Fbln7", "Sdc1"), group = "Cluster", facet = "vertical", theme = 12) +
+  stat_summary(fun.y = median, geom = "point", size = 2) +
+  scale_fill_manual(values = col_k3) +
+  scale_color_manual(values = col_k3) +
+  scale_y_continuous("Log(expression)", expand = c(0, 0)) +
+  theme(panel.border = element_blank(), strip.background = element_blank(), legend.position = "none", 
+        axis.line = element_line(colour = "black", size = 0.5), strip.text.x = element_text(size = 14),
+        axis.ticks.y = element_line(colour = "black", size = 0.5), axis.text.y = element_text(colour = "black", size = 8),
+        axis.text.x = element_text(colour = "black", size = 10, angle = 45, hjust = 1))
+ggsave("plots/ISC/markers_ISC3.pdf", dpi = 600, width = 3, height = 3)
+ggsave("plots/ISC/markers_ISC3.tiff", dpi = 600, width = 3, height = 3)
+```
+
+### Markers ISC3b and ISC3c
+```{r fig.height=2.5, fig.width=3}
+plot_expression(sce, var = c("G0s2", "Ptx3", "Cthrc1"), group = "sc3_5_clusters", facet = "vertical", theme = 12) +
+  stat_summary(fun.y = median, geom = "point", size = 2) +
+  scale_fill_manual(values = col_k5) +
+  scale_color_manual(values = col_k5) +
+  scale_y_continuous("Log(expression)", expand = c(0, 0)) +
+  theme(panel.border = element_blank(), strip.background = element_blank(), legend.position = "none", 
+        axis.line = element_line(colour = "black", size = 1),x`
+        axis.ticks.y = element_line(colour = "black", size = 1), axis.text.y = element_text(colour = "black"),
+        axis.text.x = element_text(colour = "black", angle = 45, hjust = 1))
+ggsave("plots/ISC/markers_ISC3b-c.pdf", dpi = 600)
+ggsave("plots/ISC/markers_ISC3b-c.tiff", dpi = 600)
+```
+
+
+#### ISC markers per genotype
+```{r fig.height=4, fig.width=5}
+sce_object = sce
+gene = c("Cd55", "F3", "Sdc1")
+group = "sc3_5_clusters"
+
+rowData <- NULL
+rowData  <- t(logcounts(sce_object)[gene, ])
+rowData <- data.frame(rowData)
+  colData <- data.frame(cluster = sce_object[[group]], genotype = sce_object[["genotype"]])
+  temp <- cbind(rowData, colData)
+  temp <- tidyr::gather(temp, gene, logcounts, -cluster, -genotype)
+  #temp$gene <- factor(temp$gene, levels = var)
+  
+ggplot(temp, aes(cluster, logcounts)) +
+  geom_boxplot(aes(fill = cluster)) +
+  facet_grid(gene ~ genotype)
+ggsave("plots/ISC/markers_per_cluster_and_genotype.pdf", dpi = 600, width = 5, height = 4)
+
+
+
+ggplot(temp, aes(cluster, logcounts)) +
+  geom_jitter(aes(col = cluster), width = 0.5) +
+  facet_grid(gene~genotype)
+```
+
+
+#### Print markers per gene
+```{r fig.height=2.5, fig.width=3.5, include=FALSE}
+markers <- c("Gdf10", "Thbd", "F3", "Cd55", "Ly6a", "Anxa3", "Thbs4", "Fbln7", "Sdc1", "Cthrc1", "H19", "Ptx3",  "Ier5", "G0s2", "Tsc22d3", "Pdgfra")
+
+for (m in markers) {
+  plot_expression(sce, var = m, group = "Cluster", facet = "horizontal", theme = 14, type = "boxplot") +
+  scale_fill_brewer(type = "qual", palette = "Set2") +
+  scale_y_continuous("Log(expression)", expand = c(0, 0)) +
+  theme(panel.border = element_blank(), strip.background = element_blank(), legend.position = "none", 
+        axis.line = element_line(colour = "black", size = .75), strip.text.x = element_text(size = 16),
+        axis.ticks.y = element_line(colour = "black", size = .75), axis.text = element_text(colour = "black"))
+ggsave(paste("plots/ISC/", m, ".pdf", sep = ""), dpi = 600, width = 2.25, height = 2.5)
+ggsave(paste("plots/ISC/", m, ".tiff", sep = ""), dpi = 600, width = 2.25, height = 2.5)
+}
+```
+
+```{r fig.height=3, fig.width=4, include=FALSE}
+markers <- c("Gdf10", "Thbd", "F3", "Cd55", "Ly6a", "Anxa3", "Thbs4", "Fbln7", "Sdc1", "Cthrc1", "H19", "Ptx3",  "Ier5", "G0s2", "Tsc22d3", "Pdgfra")
+
+for (m in markers) {
+  plot_expression(sce, var = m, group = "sc3_5_clusters", facet = "horizontal", theme = 14, type = "boxplot") +
+  scale_fill_brewer(type = "qual", palette = "Set1") +
+  scale_y_continuous("Log(expression)", expand = c(0, 0)) +
+  theme(panel.border = element_blank(), strip.background = element_blank(), legend.position = "none", 
+        axis.line = element_line(colour = "black", size = 0.5), strip.text.x = element_text(size = 20),
+        axis.ticks.y = element_line(colour = "black", size = 0.5), axis.text = element_text(colour = "black"))
+ggsave(paste("plots/ISC/", m, "k5.pdf", sep = ""), dpi = 600, width = 3, height = 3.5)
+ggsave(paste("plots/ISC/", m, "k5.tiff", sep = ""), dpi = 600, width = 3, height = 3.5)
+}
+```
+
+Statistics on markers
+```{r}
+markers <- c("Cd55", "F3", "Sdc1")
+```
+
+Make dataframe with genes and expression
+```{r}
+group = "Cluster"
+
+  rowData <- NULL
+  temp <- NULL
+  for (gene in markers) {
+    if (gene %in% row.names(sce)) {
+      rowData[[gene]]  <- logcounts(sce)[gene, ]
+    }
+    else {
+      print(paste0(gene, " not expressed or written wrong!", sep = ""))
+    }
+
+  rowData <- data.frame(rowData)
+  colData <- data.frame(cluster = sce[[group]])
+  temp <- cbind(rowData, colData)
+  temp <- tidyr::gather(temp, gene, logcounts, -cluster)
+temp$gene <- factor(temp$gene, levels = markers)
+}
+```
+
+```{r}
+var_a <- c("ISC 1", "ISC 2", "ISC 3")
+var_b <- c("ISC 2", "ISC 3", "ISC 1")
+
+
+for (m in markers) {
+  temp2 <- temp %>% 
+  filter(gene == m)
+  print(paste("Wilcoxon test ", m, sep = ""))
+  for (i in 1:3) {
+    temp3 <- temp2 %>%
+      filter(cluster == var_a[i] | cluster == var_b[i])
+    test <- wilcox.test(temp3$logcounts~temp3$cluster)
+    print(paste(var_a[i], "vs", var_b[i], "p =", test$p.value, sep = " "))
+  }
+}
+```
+
+
+### Correlation between Gdf10 and surface markers
+```{r}
+rowData <- t(logcounts(sce)[c("Gdf10", "F3"), ])
+rowData <- as.data.frame(rowData)
+rowData$cluster <- sce$Cluster
+rowData$genotype <- sce$genotype
+
+ggplot(as_tibble(rowData), aes(x = Gdf10, y = F3, col = cluster, shape = genotype)) +
+  geom_point(size = 3) +
+  scale_color_brewer(type = "qual", palette = "Set2") +
+  scale_x_continuous(breaks = c(0, 10)) +
+  scale_y_continuous(breaks = c(0, 10)) +
+  #theme_bw(base_size = 18) +
+  geom_rangeframe(col = "black") +
+  theme_tufte(base_size = 18) +
+  theme(axis.text = element_text(colour = "black"))
+```
+
+
+### tSNE
+Try out different perplexities
+```{r fig.height=4, fig.width=5.5}
+for (p in 4:10) {
+  print(plotTSNE(sce, colour_by = "sc3_5_clusters", perplexity = p, exprs_values = "logcounts", rand_seed = 123456, return_SCE = FALSE) + ggtitle(paste("Perplexity = ", p, sep = "")))
+}
+```
+
+Export tSNE dims
+```{r fig.height=4, fig.width=5.5}
+reducedDims(sce)$TSNE <- NULL
+plotTSNE(sce, colour_by = "sc3_5_clusters", perplexity = 5, exprs_values = "logcounts", rand_seed = 123456, return_SCE = FALSE)
+sce <- plotTSNE(sce, colour_by = "sc3_5_clusters", return_SCE = TRUE, perplexity = 5, exprs_values = "logcounts", rand_seed = 123456)
+sce$Dim1 <- reducedDims(sce)$TSNE[,1]
+sce$Dim2 <- reducedDims(sce)$TSNE[,2]
+```
+
+Plot tSNE k=5
+```{r fig.height=2.5, fig.width=3.5}
+plot_dims(sce, x = "Dim1", y = "Dim2", color = "sc3_5_clusters", theme = 14, point_size = 3) +
+  scale_color_manual(values = col_k5) +
+  labs(x = "Dim 1", y = "Dim 2") +
+  guides(shape = FALSE) +
+  theme(legend.position = "right", legend.title = element_blank())
+ggsave("plots/ISC/tSNE_k5.pdf", dpi = 600, width = 3.5, height = 2.5)
+```
+

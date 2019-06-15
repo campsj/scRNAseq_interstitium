@@ -1,0 +1,432 @@
+---
+title: "Plotting clusters satellite cells and pseudotime"
+author: "Jordi Camps"
+date: "2018 12 04"
+output: html_document
+---
+
+## Load libraries
+```{r message=FALSE}
+library(SingleCellExperiment)
+library(scran)
+library(SC3)
+library(scTools)
+library(dplyr)
+library(RColorBrewer)
+library(ggplot2)
+library(scater)
+```
+
+## Define settings for theme
+```{r}
+theme_jc <- theme(panel.grid = element_blank(), panel.border = element_blank(), axis.line = element_line(size = 1, colour = "black"),
+                  axis.ticks = element_line(size = 1, colour = "black"), axis.text = element_text(colour = "black"))
+```
+
+## Read data
+```{r}
+sce <- readRDS("data/reads_qc_scran_sc3.rds")
+# select satellite cells
+sce <- sce[, sce$Clusters == "Satellite cells"]
+```
+
+## Plot PCA
+```{r fig.height=3, fig.width=4}
+plotPCA(sce, colour_by = "Clusters")
+```
+
+## Cluster
+```{r}
+sce <- sc3_prepare(sce)
+sce <- sc3_estimate_k(sce)
+metadata(sce)$sc3$k_estimation
+sce <- sc3(sce, ks = 2:4, biology = TRUE, n_cores = 4)
+```
+
+## Check cluster interactively
+```{r eval=FALSE, include=FALSE}
+sc3_interactive(sce)
+```
+
+## Create column clusters
+```{r}
+sce$Clusters <- plyr::revalue(sce$sc3_4_clusters, c("1" = "Dystrophic\nactivated", "2" = "Myoblast", "3" = "Quiescent", "4" = "Activated"))
+sce$Clusters <- factor(sce$Clusters, levels = c("Quiescent", "Dystrophic\nactivated", "Activated", "Myoblast"))
+```
+
+
+## Check PCA and export dims
+```{r fig.height=3, fig.width=4}
+sce = plotPCA(sce, ncomponents = 2, colour_by = "sc3_2_clusters", return_SCE = TRUE)
+sce = plotPCA(sce, ncomponents = 2, colour_by = "sc3_3_clusters", return_SCE = TRUE)
+sce = plotPCA(sce, ncomponents = 2, colour_by = "sc3_4_clusters", return_SCE = TRUE)
+sce$PC1 <- reducedDim(sce)[,1]
+sce$PC2 <- reducedDim(sce)[,2]
+```
+
+### Plot myogenic genes over PC1
+```{r fig.height=2, fig.width=2}
+sce_object = sce
+var = c("Pax7", "Myf5", "Myod1", "Myog")
+group = "PC1"
+
+  rowData <- NULL
+  for (gene in var) {
+    if (gene %in% row.names(sce_object)) {
+      rowData[[gene]]  <- logcounts(sce_object)[gene, ]
+    }
+    else {
+      print(paste0(gene, " not expressed or written wrong!", sep = ""))
+    }
+}
+  rowData <- data.frame(rowData)
+  colData <- data.frame(cluster = sce_object[[group]])
+  temp <- cbind(rowData, colData)
+  temp <- tidyr::gather(temp, gene, logcounts, -cluster)
+temp$gene <- factor(temp$gene, levels = var)
+
+temp %>%
+  ggplot(aes(x = cluster, y = logcounts)) +
+  geom_point(size = 1, alpha = 0.8) +
+  geom_smooth(se = FALSE, size = 2, col = "red", span = 1.2) +
+  facet_wrap(~gene, scales = "free") +
+  scale_x_continuous("PC1", expand = c(0,0)) +
+  scale_y_continuous("Log(expression)") +
+  theme_bw(base_size = 12) +
+  theme_jc +
+  theme(strip.background = element_blank(), legend.position = "none", strip.text = element_text(face = "italic"), 
+        axis.text = element_text(size = 8), axis.line = element_line(colour = "black", size = 0.75), axis.text.x = element_blank(),
+        axis.ticks.x = element_blank())
+ggsave("plots/musc/myogenes_genes_over_PC1.pdf", dpi = 600)
+```
+
+### Density plot clusters over PC
+#### Clusters
+```{r fig.height=2, fig.width=2.75}
+ggplot(as_tibble(colData(sce)), aes(x = PC1, fill = Clusters, col = Clusters)) +
+  geom_density(adjust = 2) +
+  scale_y_continuous(expand = c(0,0)) +
+  scale_x_continuous(expand = c(0,0)) +
+  labs(fill = "Clusters") +
+  scale_fill_brewer(type = "qual", palette = "Set1") +
+  scale_color_brewer(type = "qual", palette = "Set1") +
+  theme_bw(base_size = 12) +
+  guides(color = FALSE) +
+  theme_jc +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank(), legend.title = element_blank())
+ggsave("plots/musc/density_clusters_PC1.pdf", dpi = 600)
+```
+
+```{r fig.height=2, fig.width=2.75}
+ggplot(as_tibble(colData(sce)), aes(x = PC2, fill = Clusters, col = Clusters)) +
+  geom_density(adjust = 2) +
+  scale_y_continuous(expand = c(0,0)) +
+  scale_x_continuous(expand = c(0,0)) +
+  labs(fill = "Clusters") +
+  scale_fill_brewer(type = "qual", palette = "Set1") +
+  scale_color_brewer(type = "qual", palette = "Set1") +
+  theme_bw(base_size = 12) +
+  guides(color = FALSE) +
+  theme_jc +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank(), legend.title = element_blank())
+ggsave("plots/musc/density_clusters_PC2.pdf", dpi = 600)
+```
+
+#### Genotype
+```{r fig.height=2, fig.width=2.75}
+ggplot(as_tibble(colData(sce)), aes(x = PC1, fill = genotype, col = genotype)) +
+  geom_density(adjust = 1.5) +
+  scale_y_continuous(expand = c(0,0)) +
+  scale_x_continuous(expand = c(0,0)) +
+  labs(fill = "Genotype") +
+  scale_fill_manual(values = c("lightslategrey", "firebrick3")) +
+  scale_color_manual(values = c("lightslategrey", "firebrick3")) +
+  theme_bw(base_size = 12) +
+  guides(color = FALSE) +
+  theme_jc +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank(), legend.title = element_blank())
+ggsave("plots/musc/density_genotype_PC1.pdf", dpi = 600)
+```
+
+```{r fig.height=2, fig.width=2.5}
+ggplot(as_tibble(colData(sce)), aes(x = PC2, fill = genotype, col = genotype)) +
+  geom_density(adjust = 1.5) +
+  scale_y_continuous(expand = c(0,0)) +
+  scale_x_continuous(expand = c(0,0)) +
+  labs(fill = "Genotype") +
+  scale_fill_manual(values = c("lightslategrey", "firebrick3")) +
+  scale_color_manual(values = c("lightslategrey", "firebrick3")) +
+  theme_bw(base_size = 12) +
+  guides(color = FALSE) +
+  theme_jc +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank(),legend.title = element_blank())
+ggsave("plots/musc/density_genotype_PC2.pdf", dpi = 600)
+```
+
+### PCA on clusters
+```{r fig.height=2, fig.width=3.25}
+plot_dims(sce_object = sce, x = "PC1", y = "PC2", color = "Clusters", theme = 12) +
+  labs(col = "Clusters") +
+  guides(shape = FALSE) +
+  scale_color_brewer(type = "qual", palette = "Set1") +
+  theme_jc +
+  theme(axis.ticks = element_blank(), axis.text = element_blank(), legend.title = element_blank())
+ggsave("plots/musc/PCA_clusters.pdf", dpi = 600)
+```
+
+### PCA on genotype
+```{r fig.height=2, fig.width=3.25}
+plot_dims(sce_object = sce, x = "PC1", y = "PC2", color = "genotype", theme = 12, point_size = 3) +
+  labs(col = "Genotype") +
+  guides(shape = FALSE) +
+  scale_color_manual(values = c("lightslategrey", "firebrick3")) +
+  theme_jc +
+  theme(axis.ticks = element_blank(), axis.text = element_blank())
+ggsave("plots/musc/PCA_genotype.pdf", dpi = 600)
+```
+
+### Plot genes expressed in dystrophic cluster
+```{r fig.height=3, fig.width=2}
+sce_object = sce
+color = c("Angptl4", "Arhgap5", "Grsf1", "Dpysl3")
+x = "PC1"
+y = "PC2"
+theme = 12
+point_size = 2
+
+
+      #if (length(color) > 1) {
+        rowData <- NULL
+        #rowData <- t(data.frame(logcounts(sce_object)[color, ]))
+        for (gene in color) {
+          if (gene %in% row.names(sce_object)) {
+            rowData[[gene]]  <- logcounts(sce_object)[gene, ]
+          }
+          else {
+            print(paste0(gene, " not expressed or written wrong!", sep = ""))
+          }
+        }
+        rowData <- data.frame(rowData)
+        colData <- data.frame(Dim1 = sce_object[[x]], Dim2 = sce_object[[y]])
+        temp <- cbind(rowData, colData)
+        temp <- tidyr::gather(temp, gene, logcounts, -Dim1, - Dim2)
+        temp$gene <- factor(temp$gene, levels = color)
+
+        ggplot(temp, aes(Dim1, Dim2, col = logcounts)) +
+          geom_point(size = point_size) +
+          facet_wrap(~ gene) +
+          #labs(x = x, y = y, color = group) +
+          #guides(color = guide_colorbar(barwidth = 8, barheight = 1, ticks = FALSE, title.vjust = c(1.3), title = "Logcounts")) +
+          #viridis::scale_color_viridis(option = "plasma", guide = guide_colourbar(ticks = FALSE)) +
+          theme_bw(base_size = theme) +
+          scale_color_gradientn(colors = colorRampPalette(c('navyblue', 'violetred', "firebrick1", 'darkorange'))(100), 
+                                guide = guide_colorbar(barwidth = 4, barheight = 0.5, ticks = FALSE, label.position = "top", 
+                                                       label.vjust = 1, direction = "horizontal"), limits = c(0, 10), breaks = c(0, 5, 10)) +
+          theme_jc +
+          theme(legend.position = "bottom", legend.justification = c(0.5, 0.5), legend.title = element_blank(), 
+                strip.text = element_text(size = 12, face = "italic", colour = "black"), axis.ticks = element_blank(), axis.text = element_blank(),
+                strip.background = element_blank(), axis.line = element_blank(), axis.title = element_blank())
+ggsave("plots/musc/PCA_genes_dystrophic_cluster.pdf", dpi = 600)
+
+```
+
+### Violin plot of myogenic genes
+```{r fig.height=2, fig.width=2}
+sce_object = sce
+var = c("Pax7", "Myf5", "Myod1", "Myog")
+group = "Clusters"
+theme = 12
+type = "violin"
+facet = "vertical"
+
+rowData <- NULL
+  for (gene in var) {
+    if (gene %in% row.names(sce_object)) {
+      rowData[[gene]]  <- logcounts(sce_object)[gene, ]
+    }
+    else {
+      print(paste0(gene, " not expressed or written wrong!", sep = ""))
+    }
+
+  rowData <- data.frame(rowData)
+  colData <- data.frame(cluster = sce_object[[group]])
+  temp <- cbind(rowData, colData)
+  temp <- tidyr::gather(temp, gene, logcounts, -cluster)
+  temp$gene <- factor(temp$gene, levels = var)
+
+  p <- ggplot(temp, aes(x = cluster, y = logcounts))
+  }
+
+  if (type == "violin") {
+    p <- p + 
+      geom_violin(aes(fill = cluster, col = cluster), scale = "width") + 
+      stat_summary(fun.y = "median", geom = "point", size = 1, color = "black")
+  }
+
+
+
+if (facet == "vertical") {
+  p <- p +
+    facet_wrap(gene ~ ., scales = "free_y", strip.position = "left", ncol = 1) +
+    labs(y = "Expression (logcounts)", fill = "Cluster") +
+    theme_bw(base_size = theme)
+}
+
+p +
+  scale_fill_brewer(type = "qual", palette = "Set1") +
+  scale_color_brewer(type = "qual", palette = "Set1") +
+  theme_jc +
+  theme(legend.position = "none", axis.title.x = element_blank(), strip.background = element_blank(), strip.placement = "oustide",
+        axis.text.x = element_text(angle = 45, hjust = 1), axis.title.y = element_text(hjust = 1))
+```
+
+## tSNE
+```{r fig.height=3, fig.width=4}
+for (p in c(1, 2, 3, 4, 5, 6)) {
+  print(plotTSNE(sce, colour_by = "sc3_4_clusters", return_SCE = FALSE, perplexity = p, exprs_values = "logcounts") + ggtitle(paste("Perplexity = ", p, sep = "")))
+}
+```
+
+## Monocle
+```{r}
+library(monocle)
+library(M3Drop)
+library(ggplot2)
+library(ggbeeswarm)
+library(ggthemes)
+library(viridis)
+library(reshape2)
+```
+
+### Make newCellDataSet
+```{r}
+cnts <- counts(sce)
+geneNames <- rownames(sce)
+colnames(cnts) <- 1:ncol(cnts)
+rownames(cnts) <- 1:nrow(cnts)
+pd <- data.frame(genotype = sce$genotype, Cell = colnames(sce), SC3 = sce$Clusters)
+pd <- new("AnnotatedDataFrame", data=pd)
+fd <- data.frame(gene_short_name = geneNames, feature_id = rowData(sce)$feature_id)
+fd <- new("AnnotatedDataFrame", data=fd)
+
+cds <- newCellDataSet(cnts, phenoData = pd, featureData = fd, lowerDetectionLimit = 0.1, expressionFamily = tobit(Lower = 0.1))
+rpc_matrix <- relative2abs(cds, method = "num_genes")
+
+cds <- newCellDataSet(as(as.matrix(rpc_matrix), "sparseMatrix"),
+                phenoData = pd,
+                featureData = fd,
+                lowerDetectionLimit = 0.5,
+                expressionFamily = negbinomial.size())
+rownames(cds) <- fData(cds)$feature_id
+colnames(cds) <- pData(cds)$Cell
+cds
+```
+
+```{r}
+cds <- estimateSizeFactors(cds)
+cds <- estimateDispersions(cds)
+```
+
+```{r}
+cds <- detectGenes(cds, min_expr = 0.1)
+print(head(fData(cds)))
+expressed_genes <- row.names(subset(fData(cds),
+    num_cells_expressed >= 10))
+```
+
+```{r fig.height=3, fig.width=3}
+pData(cds)$Total_mRNAs <- Matrix::colSums(exprs(cds))
+
+cds <- cds[,pData(cds)$Total_mRNAs < 1e6]
+
+upper_bound <- 10^(mean(log10(pData(cds)$Total_mRNAs)) +
+            2*sd(log10(pData(cds)$Total_mRNAs)))
+lower_bound <- 10^(mean(log10(pData(cds)$Total_mRNAs)) -
+            2*sd(log10(pData(cds)$Total_mRNAs)))
+
+qplot(Total_mRNAs, data = pData(cds), color = genotype, geom =
+"density") +
+geom_vline(xintercept = lower_bound) +
+geom_vline(xintercept = upper_bound)
+```
+
+```{r}
+cds <- cds[,pData(cds)$Total_mRNAs > lower_bound &
+      pData(cds)$Total_mRNAs < upper_bound]
+cds <- detectGenes(cds, min_expr = 0.1)
+```
+
+```{r fig.height=3, fig.width=3}
+# Log-transform each value in the expression matrix.
+L <- log(Biobase::exprs(cds[expressed_genes,]))
+
+# Standardize each gene, so that they are all on the same scale,
+# Then melt the data with plyr so we can plot it easily
+melted_dens_df <- melt(Matrix::t(scale(Matrix::t(L))))
+
+# Plot the distribution of the standardized gene expression values.
+qplot(value, geom = "density", data = melted_dens_df) +
+stat_function(fun = dnorm, size = 0.5, color = 'red') +
+xlab("Standardized log(FPKM)") +
+ylab("Density")
+```
+
+### Constructing single cell trajectories
+```{r}
+diff_test_res <- differentialGeneTest(cds[expressed_genes,],
+              fullModelFormulaStr = "~SC3")
+ordering_genes <- row.names(subset(diff_test_res, qval < 0.1))
+```
+
+```{r fig.height=3, fig.width=3}
+cds <- setOrderingFilter(cds, ordering_genes)
+plot_ordering_genes(cds)
+```
+
+```{r}
+library(DDRTree)
+cds <- reduceDimension(cds, max_components = 2,
+    method = 'DDRTree')
+```
+
+```{r}
+cds <- orderCells(cds)
+```
+
+```{r fig.height=3, fig.width=3.5}
+plot_cell_trajectory(cds, color_by = "State")
+```
+
+```{r fig.height=3.5, fig.width=3}
+plot_cell_trajectory(cds, color_by = "genotype")
+plot_cell_trajectory(cds, color_by = "SC3")
+plot_cell_trajectory(cds, color_by = "Pseudotime")
+```
+Put root state
+```{r fig.height=3.5, fig.width=3}
+cds <- orderCells(cds, root_state = c(1))
+
+plot_cell_trajectory(cds, color_by = "Pseudotime")
+plot_cell_trajectory(cds, color_by = "State")
+```
+
+```{r fig.height=4, fig.width=3}
+plot_cell_trajectory(cds, markers = c("Pax7", "Myf5", "Myod1", "Myog"), use_color_gradient = TRUE)
+plot_cell_trajectory(cds, markers = c("Cdk1", "Timp1", "Pax7", "Myog"), use_color_gradient = TRUE)
+```
+
+```{r fig.height=2, fig.width=3.75}
+cds$genotype <- factor(cds$genotype, levels = c("Dystrophic", "Healthy"))
+ggplot(pData(cds), aes(x = Pseudotime, y = genotype, col = SC3)) +
+  ggbeeswarm::geom_quasirandom(groupOnX = FALSE, size = 3) +
+  theme_bw(base_size = 12) +
+  scale_x_reverse(expand = c(0.1, 0.1)) + 
+  scale_color_brewer(type = "qual", palette = "Set1") +
+  labs(color = "Clusters") +
+  theme(axis.title.y = element_blank(), panel.border = element_blank(), panel.grid = element_blank(),
+          axis.ticks = element_blank(), axis.line = element_line(size = 1, colour = "black"),
+          axis.text.x = element_blank(), axis.text.y = element_text(colour = "black"), legend.title = element_blank())
+ggsave("plots/musc/pseudotime_genotype.pdf", dpi = 600)
+```
+
+

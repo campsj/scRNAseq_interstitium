@@ -1,0 +1,69 @@
+---
+title: "Markers_comparison_Schwalie"
+author: "Jordi Camps"
+date: "2018 M10 30"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(readxl)
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+```
+
+# Load excel file with markers
+## Camps data
+```{r}
+camps <- read.csv("tables/k7_de_genes.csv", header = TRUE)
+head(camps)
+```
+
+```{r}
+camps$sc3_7_markers_clusts <- plyr::revalue(factor(camps$sc3_7_markers_clusts), c("1" = "ISC 3", "2" = "ISC 1", "3" = "ISC 2", 
+                                                                                  "4" = "Satellite cells", "5" = "Schwann cells", 
+                                                                                  "6" = "Smooth muscle cells", "7" = "Fibroblast"))
+```
+
+```{r}
+camps <- camps %>%
+  select(feature_symbol, sc3_7_markers_clusts) %>%
+  filter(sc3_7_markers_clusts == "ISC 1" | sc3_7_markers_clusts == "ISC 2" | sc3_7_markers_clusts == "ISC 3")
+```
+
+```{r}
+camps$feature_symbol <- as.character(camps$feature_symbol)
+camps$sc3_7_markers_clusts <- factor(camps$sc3_7_markers_clusts, levels = c("ISC 1", "ISC 2", "ISC 3"))
+```
+
+## Schwalie data
+```{r}
+schwalie <- read_excel("C://Users/Jordi Camps/stack/PhD/Articles/Supplementary information tables Schwalie Nature 2018/Supplementary_Table_2.xlsx")
+head(schwalie)
+```
+
+```{r}
+schwalie <- schwalie %>%
+  gather(Cluster, feature_symbol)
+```
+
+## Plot comparable markers
+```{r}
+df <- inner_join(camps, schwalie, by = "feature_symbol")
+```
+
+```{r fig.height=3.5, fig.width=4}
+df %>%
+  ggplot(aes(fill = sc3_7_markers_clusts, x = Cluster)) +
+  geom_bar(width = 0.8) +
+  scale_fill_brewer(type = "qual", palette = "Set2") +
+  scale_y_continuous(expand = c(0, 0)) +
+  labs(fill = "Camps et al\nclusters", x = "Schwalie et al clusters", y = "Number of overlapping markers") +
+  theme_bw(base_size = 16) +
+  theme(panel.border = element_blank(), panel.grid = element_blank(), axis.line = element_line(size = 1, colour = "black"), 
+        axis.ticks = element_line(size = 1, colour = "black"), axis.text = element_text(colour = "black"), axis.title.y = element_text(hjust = 1),
+        axis.title.x = element_text(hjust = 0))
+ggsave("plots/Camps_Schwalie_comparison.pdf", dpi = 600)
+```
+

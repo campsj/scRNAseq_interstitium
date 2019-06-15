@@ -1,0 +1,656 @@
+---
+title: "Monocle on ISCs"
+author: "Jordi Camps"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(SingleCellExperiment)
+library(scater)
+library(scTools)
+library(edgeR)
+library(ggthemes)
+library(ggExtra)
+library(ggplot2)
+library(dplyr)
+library(viridis)
+library(RColorBrewer)
+library(M3Drop)
+library(monocle)
+set.seed(1234567)
+```
+
+## Load clustering file
+```{r}
+sce <- readRDS("data/reads_qc_scran_ISC_SC3.rds")
+sce
+```
+
+Define colors
+```{r}
+library(RColorBrewer)
+col_k3 <- brewer.pal(3, "Set2")
+#col_k5 <- brewer.pal(5, "Set1")
+col_k5 <- c("#66c2a5", "#fc8d62", "#76BAFF", "#785ECC", "#AD54B2")
+#alternative colors: "#55B270", "#FF9B55",
+col_genotype <- c("lightslategrey", "firebrick3")
+```
+
+### PCA on k=5
+Set names k5
+```{r}
+sce$sc3_5_clusters <- plyr::revalue(sce$sc3_5_clusters, c("1" = "ISC 3c", "2" = "ISC 3a", "3" = "ISC 3b", "4" = "ISC 1", "5" = "ISC 2"))
+sce$sc3_5_clusters <- factor(sce$sc3_5_clusters, levels = c("ISC 1", "ISC 2", "ISC 3a", "ISC 3b", "ISC 3c"))
+```
+
+#Monocle
+## Gene selection with M3Drop
+```{r}
+library(M3Drop)
+norm_data <- M3DropCleanData(counts(sce), labels = sce$Cluster, is.counts = TRUE, min_detected_genes = 2000)
+dim(norm_data$data)
+fits <- M3DropDropoutModels(norm_data$data)
+de_genes <- M3DropDifferentialExpression(norm_data$data, mt_method = "fdr", mt_threshold = 0.01)
+#hvg <- BrenneckeGetVariableGenes(counts(fap), fdr = 0.01, minBiolDisp = 0.5)
+de_genes[order(de_genes$q.value), ]
+```
+
+```{r}
+de <- sce[which(rownames(sce) %in% rownames(de_genes))]
+de <- de[!duplicated(rownames(de)), ]
+```
+
+```{r}
+colnames(de) <- 1:ncol(de)
+geneNames <- rownames(de)
+rownames(de) <- 1:nrow(de)
+pd <- data.frame(ISC = sce$Cluster, genotype = sce$genotype, SC3 = sce$sc3_5_clusters)
+pd <- new("AnnotatedDataFrame", data=pd)
+fd <- data.frame(gene_short_name = geneNames)
+fd <- new("AnnotatedDataFrame", data=fd)
+
+dCellData <- newCellDataSet(counts(de), phenoData = pd, featureData = fd, expressionFamily = tobit())
+dCellData <- setOrderingFilter(dCellData, which(geneNames %in% de_genes))
+dCellData <- estimateSizeFactors(dCellData)
+dCellDataSet <- reduceDimension(dCellData, pseudo_expr = 1)
+dCellDataSet <- orderCells(dCellDataSet, reverse = FALSE)
+plot_cell_trajectory(dCellDataSet)
+plot_cell_trajectory(dCellDataSet, color_by = "ISC")
+plot_cell_trajectory(dCellDataSet, color_by = "Pseudotime")
+plot_cell_trajectory(dCellDataSet, color_by = "genotype")
+plot_cell_trajectory(dCellDataSet, color_by = "SC3")
+```
+
+Set root state
+```{r}
+dCellDataSet <- orderCells(dCellDataSet, reverse = TRUE)
+```
+
+pseudotime per genotype
+```{r fig.height=3, fig.width=5}
+ggplot(pData(dCellDataSet), aes(x = Pseudotime, y = genotype, col = ISC)) +
+    ggbeeswarm::geom_quasirandom(groupOnX = FALSE, size = 4, width = 0.5) +
+    scale_color_brewer(type = "qual", palette = "Set1") +
+    geom_rangeframe(color = "black", size = 0.5) +
+    ggthemes::theme_tufte(base_size = 16) +
+    #theme_bw(base_size = 16) +
+    #scale_x_reverse(breaks = c(0, 19.15)) + 
+    theme(axis.title.y = element_blank(), panel.border = element_blank(), panel.grid = element_blank(),
+          axis.ticks.x = element_line(colour = "black", size = 0.5), 
+          legend.title = element_blank(), axis.text.x = element_blank(), axis.text.y = element_text(colour = "black"))
+ggsave("plots/ISC/pseudotime/M3Drop/ISC_Clusters_order_pseudotime.pdf", dpi = 600, height = 3, width = 5)
+ggsave("plots/ISC/pseudotime/M3Drop/ISC_Clusters_order_pseudotime.tiff", dpi = 600, height = 3, width = 5)
+```
+
+
+## Gene selection with Monocle
+## Make newCellDataSet
+```{r}
+library(monocle)
+cnts <- counts(sce)
+geneNames <- rownames(sce)
+colnames(cnts) <- 1:ncol(cnts)
+rownames(cnts) <- 1:nrow(cnts)
+pd <- data.frame(genotype = sce$genotype, cell_id = colnames(sce), SC3 = sce$sc3_5_clusters, ISC = sce$Cluster)
+pd <- new("AnnotatedDataFrame", data=pd)
+fd <- data.frame(gene_short_name = geneNames, feature_id = rowData(sce)$feature_id)
+fd <- new("AnnotatedDataFrame", data=fd)
+
+cds <- newCellDataSet(cnts, phenoData = pd, featureData = fd, lowerDetectionLimit = 0.1, expressionFamily = tobit(Lower = 0.1))
+rpc_matrix <- relative2abs(cds, method = "num_genes")
+
+cds <- newCellDataSet(as(as.matrix(rpc_matrix), "sparseMatrix"),
+                phenoData = pd,
+                featureData = fd,
+                lowerDetectionLimit = 0.5,
+                expressionFamily = negbinomial.size())
+rownames(cds) <- fData(cds)$feature_id
+colnames(cds) <- pData(cds)$cell_id
+cds
+```
+
+```{r}
+cds <- estimateSizeFactors(cds)
+cds <- estimateDispersions(cds)
+```
+
+```{r}
+cds <- detectGenes(cds, min_expr = 0.1)
+print(head(fData(cds)))
+```
+
+```{r}
+cds <- detectGenes(cds, min_expr = 0.1)
+print(head(fData(cds)))
+expressed_genes <- row.names(subset(fData(cds),
+    num_cells_expressed >= 10))
+```
+
+```{r}
+print(head(pData(cds)))
+```
+
+```{r}
+pData(cds)$Total_mRNAs <- Matrix::colSums(Biobase::exprs(cds))
+
+cds <- cds[,pData(cds)$Total_mRNAs < 1e6]
+
+upper_bound <- 10^(mean(log10(pData(cds)$Total_mRNAs)) +
+            2*sd(log10(pData(cds)$Total_mRNAs)))
+lower_bound <- 10^(mean(log10(pData(cds)$Total_mRNAs)) -
+            2*sd(log10(pData(cds)$Total_mRNAs)))
+
+qplot(Total_mRNAs, data = pData(cds), color = genotype, geom =
+"density") +
+geom_vline(xintercept = lower_bound) +
+geom_vline(xintercept = upper_bound)
+```
+
+```{r}
+cds <- cds[,pData(cds)$Total_mRNAs > lower_bound &
+      pData(cds)$Total_mRNAs < upper_bound]
+cds <- detectGenes(cds, min_expr = 0.1)
+```
+
+```{r}
+# Log-transform each value in the expression matrix.
+L <- log(Biobase::exprs(cds[expressed_genes,]))
+
+# Standardize each gene, so that they are all on the same scale,
+# Then melt the data with plyr so we can plot it easily
+melted_dens_df <- reshape2::melt(Matrix::t(scale(Matrix::t(L))))
+
+# Plot the distribution of the standardized gene expression values.
+qplot(value, geom = "density", data = melted_dens_df) +
+stat_function(fun = dnorm, size = 0.5, color = 'red') +
+xlab("Standardized log(FPKM)") +
+ylab("Density")
+```
+
+## Constructing single cell trajectories
+### DE analysis on SC3 clusters k=5
+```{r}
+diff_test_res <- differentialGeneTest(cds[expressed_genes,],
+              fullModelFormulaStr = "~SC3")
+ordering_genes <- row.names(subset(diff_test_res, qval < 0.1))
+```
+
+```{r}
+cds <- setOrderingFilter(cds, ordering_genes)
+plot_ordering_genes(cds)
+```
+
+```{r}
+library(DDRTree)
+cds <- reduceDimension(cds, max_components = 2, reduction_method = "DDRTree")
+```
+
+```{r}
+cds <- orderCells(cds)
+```
+
+### Plot trajectory
+Genotype
+```{r fig.height=3, fig.width=2.5}
+plot_cell_trajectory(cds, color_by = "genotype", cell_size = 3, cell_link_size = .5) +
+  scale_x_reverse() +
+  #theme_void() +
+  #scale_color_tableau() +
+  scale_color_manual(values = col_genotype) +
+  theme(text = element_text(size = 14), legend.position = "top", legend.title = element_blank(), axis.text = element_blank(),
+        axis.ticks = element_blank(), axis.title = element_text(colour = "black", size = 14), axis.line = element_line(colour = "black"))
+ggsave("plots/ISC/pseudotime/trajectory_genotype.tiff", width = 2.5, height = 3, dpi = 600)
+ggsave("plots/ISC/pseudotime/trajectory_genotype.pdf", width = 2.5, height = 3, dpi = 600)
+```
+
+SC3 clusters
+```{r fig.height=2, fig.width=2}
+plot_cell_trajectory(cds, color_by = "SC3", cell_size = 2, cell_link_size = .5) +
+  scale_x_reverse() +
+  #theme_void() +
+  scale_color_manual(values = col_k5) +
+  theme(text = element_text(size = 12), legend.position = "none", legend.title = element_blank(), axis.text = element_blank(),
+        axis.ticks = element_blank(), axis.title = element_text(colour = "black", size = 12),
+        axis.line.x = element_line(colour = "black", size = 1), axis.line.y = element_line(colour = "black", size = 1))
+ggsave("plots/ISC/pseudotime/trajectory_sc3_k5.tiff")
+ggsave("plots/ISC/pseudotime/trajectory_sc3_k5.pdf")
+```
+
+ISC clusters
+```{r fig.height=2.5, fig.width=3.5}
+plot_cell_trajectory(cds, color_by = "ISC", cell_size = 3, cell_link_size = .5) +
+  scale_x_reverse() +
+  #theme_void() +
+  scale_color_brewer(type = "qual", palette = "Set2") +
+  #theme(text = element_text(size = 20), legend.position = "top", legend.title = element_blank())
+  theme(text = element_text(size = 14), legend.position = "right", legend.title = element_blank(), axis.text = element_blank(),
+        axis.ticks = element_blank(), axis.title = element_text(colour = "black", size = 14), axis.line = element_line(colour = "black"))
+ggsave("plots/ISC/pseudotime/trajectory_ISC.tiff", width = 3.5, height = 2.5)
+ggsave("plots/ISC/pseudotime/trajectory_ISC.pdf", width = 3.5, height = 2.5)
+```
+
+Monocle state
+```{r fig.height=4, fig.width=4}
+plot_cell_trajectory(cds, color_by = "State", cell_size = 3, cell_link_size = .5) +
+  scale_x_reverse() +
+  theme_void() +
+  scale_color_brewer(type = "qual", palette = "Set1") +
+  theme(text = element_text(size = 20), legend.position = "top", legend.title = element_blank())
+ggsave("plots/ISC/pseudotime/trajectory_state.tiff", width = 4, height = 4)
+ggsave("plots/ISC/pseudotime/trajectory_state.pdf", width = 4, height = 4)
+```
+
+Set root state
+```{r}
+cds <- orderCells(cds, reverse = TRUE)
+```
+
+Pseudotime
+```{r fig.height=2.75, fig.width=2.5}
+plot_cell_trajectory(cds, color_by = "Pseudotime", cell_size = 3, cell_link_size = .5) +
+  scale_x_reverse() +
+  theme_void() +
+  scale_color_gradient2_tableau(guide = guide_colorbar(ticks = FALSE, barheight = 0.7, barwidth = 4, title.vjust = 2)) +
+  theme(text = element_text(size = 14), legend.position = "top", legend.text = element_blank())
+ggsave("plots/ISC/pseudotime/trajectory_pseudotime.tiff", width = 2.5, height = 2.75)
+ggsave("plots/ISC/pseudotime/trajectory_pseudotime.pdf", width = 2.5, height = 2.75)
+```
+
+pseudotime per genotype
+```{r fig.height=2, fig.width=4}
+cds$genotype <- factor(cds$genotype, levels = c("Dystrophic", "Healthy"))
+ggplot(pData(cds), aes(x = Pseudotime, y = genotype, col = SC3)) +
+    ggbeeswarm::geom_quasirandom(groupOnX = FALSE, size = 3, width = 0.5) +
+    scale_color_manual(values = col_k5) +
+    #geom_rangeframe(color = "black", size = 1) +
+    #ggthemes::theme_tufte(base_size = 14) +
+    theme_bw(base_size = 12) +
+    scale_x_reverse(breaks = c(0, 19.15)) + 
+    theme(axis.title.y = element_blank(), panel.border = element_blank(), panel.grid = element_blank(),
+          axis.ticks = element_blank(), axis.line = element_line(size = 1, colour = "black"),
+          legend.title = element_blank(), axis.text.x = element_blank(), axis.text.y = element_text(colour = "black", size = 12))
+ggsave("plots/ISC/pseudotime/k5_Clusters_order_pseudotime.pdf", dpi = 600)
+ggsave("plots/ISC/pseudotime/k5_Clusters_order_pseudotime.tiff", dpi = 600)
+```
+
+```{r fig.height=2.5, fig.width=4}
+cds$genotype <- factor(cds$genotype, levels = c("Dystrophic", "Healthy"))
+ggplot(pData(cds), aes(x = Pseudotime, y = genotype, col = ISC)) +
+    ggbeeswarm::geom_quasirandom(groupOnX = FALSE, size = 3, width = 0.5) +
+    scale_color_manual(values = col_k3) +
+    geom_rangeframe(color = "black", size = 1) +
+    #ggthemes::theme_tufte(base_size = 14) +
+    theme_bw(base_size = 14) +
+    scale_x_reverse(breaks = c(0, 19.15)) + 
+    theme(axis.title.y = element_blank(), panel.border = element_blank(), panel.grid = element_blank(),
+          axis.ticks = element_line(colour = "black", size = 1), 
+          legend.title = element_blank(), axis.text.x = element_blank(), axis.text.y = element_text(colour = "black", size = 12))
+ggsave("plots/ISC/pseudotime/ISC_Clusters_order_pseudotime.pdf", dpi = 600, height = 3, width = 5)
+ggsave("plots/ISC/pseudotime/ISC_Clusters_order_pseudotime.tiff", dpi = 600, height = 3, width = 5)
+```
+
+
+cluster density in pseudotime
+```{r fig.height=3, fig.width=4}
+ggplot(pData(cds), aes(x = Pseudotime, fill = SC3, col = SC3)) +
+    geom_density() +
+    scale_color_brewer(type = "qual", palette = "Set1") +
+    scale_fill_brewer(type = "qual", palette = "Set1") +
+    theme_bw(base_size = 16) +
+    scale_x_reverse(breaks = c(0, 19.12), expand = c(0, 0)) + 
+    theme(axis.title.y = element_blank(), axis.ticks.y = element_blank(), panel.border = element_blank(), panel.grid = element_blank(),
+          axis.line = element_line(colour = "black", size = 0.5), axis.ticks.x = element_line(colour = "black", size = 0.5), 
+          axis.text = element_text(colour = "black"), legend.title = element_blank(), axis.line.y = element_blank(), 
+          axis.text.y = element_blank(), axis.text.x = element_blank())
+ggsave("plots/ISC/pseudotime/k5_clusters_density_order_pseudotime.pdf", dpi = 600, height = 3, width = 4)
+ggsave("plots/ISC/pseudotime/k5_clusters_density_order_pseudotime.tiff", dpi = 600, height = 3, width = 4)
+```
+
+```{r fig.height=3, fig.width=4}
+ggplot(pData(cds), aes(x = Pseudotime, fill = ISC, col = ISC)) +
+    geom_density() +
+    scale_color_brewer(type = "qual", palette = "Set2") +
+    scale_fill_brewer(type = "qual", palette = "Set2") +
+    theme_bw(base_size = 16) +
+    scale_x_reverse(breaks = c(0, 19.12), expand = c(0, 0)) + 
+    theme(axis.title.y = element_blank(), axis.ticks.y = element_blank(), panel.border = element_blank(), panel.grid = element_blank(),
+          axis.line = element_line(colour = "black", size = 0.5), axis.ticks.x = element_line(colour = "black", size = 0.5), 
+          axis.text = element_text(colour = "black"), legend.title = element_blank(), axis.line.y = element_blank(), 
+          axis.text.y = element_blank(), axis.text.x = element_blank())
+ggsave("plots/ISC/pseudotime/ISC_clusters_density_order_pseudotime.pdf", dpi = 600, height = 3, width = 4)
+ggsave("plots/ISC/pseudotime/ISC_clusters_density_order_pseudotime.tiff", dpi = 600, height = 3, width = 4)
+```
+
+## Clustering Genes by Pseudotemporal Expression Pattern 
+```{r fig.height=10, fig.width=10}
+diff_test_res <- differentialGeneTest(cds,
+              fullModelFormulaStr = "~sm.ns(Pseudotime)")
+sig_gene_names <- row.names(subset(diff_test_res, qval < 0.01))
+hm_pseudo <- plot_pseudotime_heatmap(cds[sig_gene_names,], num_clusters = 6, cores = 1, show_rownames = TRUE, return_heatmap = TRUE)
+hm_pseudo
+```
+
+# Differential expression analysis
+```{r}
+diff_test_res <- differentialGeneTest(cds[expressed_genes,],
+              fullModelFormulaStr = "~SC3")
+sig_genes <- subset(diff_test_res, qval < 0.05)
+
+head(sig_genes[,c("gene_short_name", "pval", "qval")])
+sig_genes <- dplyr::arrange(sig_genes, qval)
+head(sig_genes)
+```
+
+```{r fig.height=30, fig.width=12}
+plot_genes_violin(cds[sig_genes$feature_id[1:200], ], grouping = "SC3", min_expr = 0.1, ncol = 6)
+```
+
+### Plot genes
+```{r}
+plot_genes_boxplot <- function (cds_subset, grouping = "State", min_expr = NULL, cell_size = 0.75, 
+                              nrow = NULL, ncol = 1, panel_order = NULL, color_by = NULL, 
+                              plot_trend = FALSE, label_by_short_name = TRUE, relative_expr = TRUE, 
+                              log_scale = TRUE) 
+{
+  if (cds_subset@expressionFamily@vfamily %in% c("negbinomial", 
+                                                 "negbinomial.size")) {
+    integer_expression = TRUE
+  }
+  else {
+    integer_expression = FALSE
+    relative_expr = TRUE
+  }
+  if (integer_expression) {
+    cds_exprs = exprs(cds_subset)
+    if (relative_expr) {
+      if (is.null(sizeFactors(cds_subset))) {
+        stop("Error: to call this function with relative_expr=TRUE, you must call estimateSizeFactors() first")
+      }
+      cds_exprs = Matrix::t(Matrix::t(cds_exprs)/sizeFactors(cds_subset))
+    }
+    #cds_exprs = reshape2::melt(round(as.matrix(cds_exprs)))
+    cds_exprs = reshape2::melt(as.matrix(cds_exprs))
+  }
+  else {
+    cds_exprs = exprs(cds_subset)
+    cds_exprs = reshape2::melt(as.matrix(cds_exprs))
+  }
+  if (is.null(min_expr)) {
+    min_expr = cds_subset@lowerDetectionLimit
+  }
+  colnames(cds_exprs) = c("f_id", "Cell", "expression")
+  cds_exprs$expression[cds_exprs$expression < min_expr] = min_expr
+  cds_pData = pData(cds_subset)
+  
+  # 
+  # # Custom bit for adding in a group for 
+  # if(! is.null(show_combined)) {
+  #   for(combine_gene in show_combined) {
+  #     cds_pData_all = subset(cds_pData, gene == combine_gene)
+  #     cds_pData_all[, grouping] = paste("All", combine_gene)
+  #     cds_pData = rbind(cds_pData, cds_pData_all)
+  #   }
+  # }
+  
+  cds_fData = fData(cds_subset)
+  cds_exprs = merge(cds_exprs, cds_fData, by.x = "f_id", by.y = "row.names")
+  cds_exprs = merge(cds_exprs, cds_pData, by.x = "Cell", by.y = "row.names")
+  cds_exprs$adjusted_expression = log10(cds_exprs$expression)
+  
+  
+  
+  
+  if (label_by_short_name == TRUE) {
+    if (is.null(cds_exprs$gene_short_name) == FALSE) {
+      cds_exprs$feature_label = cds_exprs$gene_short_name
+      cds_exprs$feature_label[is.na(cds_exprs$feature_label)] = cds_exprs$f_id
+    }
+    else {
+      cds_exprs$feature_label = cds_exprs$f_id
+    }
+  }
+  else {
+    cds_exprs$feature_label = cds_exprs$f_id
+  }
+  if (is.null(panel_order) == FALSE) {
+    cds_exprs$feature_label = factor(cds_exprs$feature_label, 
+                                     levels = panel_order)
+  }
+  q = ggplot(aes_string(x = grouping, y = "expression"), data = cds_exprs)
+  if (is.null(color_by) == FALSE) {
+    q = q + geom_boxplot(aes_string(fill = color_by))
+  }
+  else {
+    q = q + geom_boxplot()
+  }
+  if (plot_trend == TRUE) {
+    q = q + stat_summary(fun.data = "mean_cl_boot", 
+                         size = 0.2)
+    q = q + stat_summary(aes_string(x = grouping, y = "expression", 
+                                    group = color_by), fun.data = "mean_cl_boot", 
+                         size = 0.2, geom = "line")
+  }
+  q = q + facet_wrap(~feature_label, nrow = nrow, 
+                     ncol = ncol, scales = "free_y")
+  if (min_expr < 1) {
+     q = q + expand_limits(y = c(min_expr, 1))
+  }
+  
+  
+  q = q + ylab("Expression") + xlab(grouping)
+  
+  if (log_scale == TRUE){
+    
+    q = q + scale_y_log10()
+  }
+  q
+}
+```
+
+
+```{r fig.height=2.5, fig.width=3}
+genes <- row.names(subset(fData(cds),
+          gene_short_name %in% c("F3")))
+plot_genes_boxplot(cds_subset = cds[genes, ], grouping = "ISC", min_expr = 0.8, color_by = "ISC") +
+  #stat_summary(fun.y = median, geom = "point", size = 2) +
+  scale_y_log10("Log(expression)", expand = c(0 ,0)) +
+  scale_fill_manual(values = col_k3) +
+  theme_bw(base_size = 12) +
+  theme(panel.border = element_blank(), panel.grid = element_blank(), strip.background = element_blank(), 
+        axis.line = element_line(colour = "black", size = 0.5), axis.ticks = element_line(colour = "black", size = 0.5), 
+        axis.text = element_text(colour = "black"), axis.title.x = element_blank(), strip.text.x = element_text(size = 18),
+        legend.title = element_blank(), axis.ticks.x = element_blank())
+ggsave("plots/ISC/F3_monocle.pdf", dpi = 600, width = 3, height = 2.5)
+```
+
+
+### Plot genes in pseudotime
+#### Upregulated in dystrophy
+Adipogenic involved genes and markers
+```{r fig.height=4, fig.width=4}
+cds$timepoint <- cds$genotype
+genes <- row.names(subset(fData(cds),
+          gene_short_name %in% c("Thbs4", "Fbln7", "Arid5b", "Angptl4")))
+plot_genes_in_pseudotime(cds[genes, ], color_by = "ISC", ncol = 2, nrow = 2, cell_size = 1) +
+  scale_y_log10() +
+  scale_x_reverse() +
+  scale_color_brewer(type = "qual", palette = "Set2") +
+  scTools_theme_opts() +
+  theme(legend.position = "none", axis.text.x = element_blank(), axis.ticks.x = element_blank(), strip.text = element_text(size = 18, face = "bold.italic"), axis.ticks.y = element_line(colour = "black"), axis.text.y = element_text(colour = "black"))
+ggsave("plots/ISC/pseudotime/genes_ordered_on_pseudotime_upregulated_adipo.tiff", dpi = 600, width = 4, height = 4)
+```
+
+Inflammatory involved genes
+```{r fig.height=2.5, fig.width=8}
+cds$timepoint <- cds$genotype
+genes <- row.names(subset(fData(cds),
+          gene_short_name %in% c("Thbs4", "Il33", "Ptx3")))
+plot_genes_in_pseudotime(cds[genes, ], color_by = "ISC", ncol = 4, cell_size = 1) +
+  scale_y_log10() +
+  scale_x_reverse() +
+  scale_color_brewer(type = "qual", palette = "Set2") +
+  scTools_theme_opts() +
+  theme(legend.position = "none", axis.text.x = element_blank(), axis.ticks.x = element_blank(), strip.text = element_text(size = 18, face = "bold.italic"), axis.ticks.y = element_line(colour = "black"), axis.text.y = element_text(colour = "black"))
+ggsave("plots/ISC/pseudotime/genes_ordered_on_pseudotime_upregulated_inflammatory.tiff", dpi = 600, width = 8, height = 2.5)
+```
+
+ECM involved genes
+
+
+proliferation involved genes
+```{r fig.height=2.5, fig.width=8}
+cds$timepoint <- cds$genotype
+genes <- row.names(subset(fData(cds),
+          gene_short_name %in% c("Mki67", "Cdk1", "Rgcc", "Ptn")))
+plot_genes_in_pseudotime(cds[genes, ], color_by = "ISC", ncol = 4, cell_size = 1) +
+  scale_y_log10() +
+  scale_x_reverse() +
+  scale_color_brewer(type = "qual", palette = "Set2") +
+  scTools_theme_opts() +
+  theme(legend.position = "none", axis.text.x = element_blank(), axis.ticks.x = element_blank(), strip.text = element_text(size = 18, face = "bold.italic"), axis.ticks.y = element_line(colour = "black"), axis.text.y = element_text(colour = "black"))
+ggsave("plots/ISC/pseudotime/genes_ordered_on_pseudotime_upregulated_proliferation.tiff", dpi = 600, width = 8, height = 2.5)
+```
+
+paracrine signaling genes
+```{r}
+cds$timepoint <- cds$genotype
+genes <- row.names(subset(fData(cds),
+          gene_short_name %in% c("Igf2", "Adam12", "Mmp3")))
+plot_genes_in_pseudotime(cds[genes, ], color_by = "ISC", ncol = 4, cell_size = 1) +
+  scale_y_log10() +
+  scale_x_reverse() +
+  scale_color_brewer(type = "qual", palette = "Set2") +
+  scTools_theme_opts() +
+  theme(legend.position = "none", axis.text.x = element_blank(), axis.ticks.x = element_blank(), strip.text = element_text(size = 18, face = "bold.italic"), axis.ticks.y = element_line(colour = "black"), axis.text.y = element_text(colour = "black"))
+ggsave("plots/ISC/pseudotime/genes_ordered_on_pseudotime_upregulated_paracrine.tiff", dpi = 600, width = 8, height = 2.5)
+```
+
+wnt-pathway involved genes
+```{r}
+cds$timepoint <- cds$genotype
+genes <- row.names(subset(fData(cds),
+          gene_short_name %in% c("Tcf7l2", "Tcim", "Cthrc1")))
+plot_genes_in_pseudotime(cds[genes, ], color_by = "ISC", ncol = 4, cell_size = 1) +
+  scale_y_log10() +
+  scale_x_reverse() +
+  scale_color_brewer(type = "qual", palette = "Set2") +
+  scTools_theme_opts() +
+  theme(legend.position = "none", axis.text.x = element_blank(), axis.ticks.x = element_blank(), strip.text = element_text(size = 18, face = "bold.italic"), axis.ticks.y = element_line(colour = "black"), axis.text.y = element_text(colour = "black"))
+ggsave("plots/ISC/pseudotime/genes_ordered_on_pseudotime_upregulated_wnt.tiff", dpi = 600, width = 8, height = 2.5)
+```
+
+H3K27 demethylase
+```{r}
+cds$timepoint <- cds$genotype
+genes <- row.names(subset(fData(cds),
+          gene_short_name %in% c("Kdm6b")))
+plot_genes_in_pseudotime(cds[genes, ], color_by = "ISC", ncol = 4, cell_size = 1) +
+  scale_y_log10() +
+  scale_x_reverse() +
+  scale_color_brewer(type = "qual", palette = "Set2") +
+  scTools_theme_opts() +
+  theme(legend.position = "none", axis.text.x = element_blank(), axis.ticks.x = element_blank(), strip.text = element_text(size = 18, face = "bold.italic"), axis.ticks.y = element_line(colour = "black"), axis.text.y = element_text(colour = "black"))
+ggsave("plots/ISC/pseudotime/genes_ordered_on_pseudotime_upregulated_epigenetics.tiff", dpi = 600, width = 8, height = 2.5)
+```
+
+
+#### Downregulated in dystrophy
+ISC 2
+```{r fig.height=4, fig.width=4}
+cds$timepoint <- cds$genotype
+genes <- row.names(subset(fData(cds),
+          gene_short_name %in% c("Gdf10", "F3", "Pid1", "Meox2")))
+plot_genes_in_pseudotime(cds[genes, ], color_by = "ISC", ncol = 2, nrow = 2, cell_size = 1) +
+  scale_y_log10() +
+  scale_x_reverse() +
+  #scale_color_tableau() +
+  scale_color_brewer(type = "qual", palette = "Set2") +
+  scTools_theme_opts() +
+  theme(legend.position = "none", axis.text.x = element_blank(), axis.ticks.x = element_blank(), strip.text = element_text(size = 18, face = "bold.italic"), axis.ticks.y = element_line(colour = "black"), axis.text.y = element_text(colour = "black"))
+ggsave("plots/ISC/pseudotime/genes_ordered_on_pseudotime_downregulated_ISC2.tiff", dpi = 600, width = 4, height = 4)
+```
+
+ISC 1
+```{r fig.height=4, fig.width=4}
+cds$timepoint <- cds$genotype
+genes <- row.names(subset(fData(cds),
+          gene_short_name %in% c("Timp3", "Ly6a", "Cd55", "Cd34")))
+plot_genes_in_pseudotime(cds[genes, ], color_by = "ISC", ncol = 2, nrow = 2, cell_size = 1) +
+  scale_y_log10() +
+  scale_x_reverse() +
+  #scale_color_tableau() +
+  scale_color_brewer(type = "qual", palette = "Set2") +
+  scTools_theme_opts() +
+  theme(legend.position = "none", axis.text.x = element_blank(), axis.ticks.x = element_blank(), strip.text = element_text(size = 18, face = "bold.italic"), axis.ticks.y = element_line(colour = "black"), axis.text.y = element_text(colour = "black"))
+ggsave("plots/ISC/pseudotime/genes_ordered_on_pseudotime_downregulated_ISC1.tiff", dpi = 600, width = 4, height = 4)
+```
+
+Inducing apoptosis
+```{r fig.height=4, fig.width=4}
+cds$timepoint <- cds$genotype
+genes <- row.names(subset(fData(cds),
+          gene_short_name %in% c("Casp7", "Hspb8")))
+plot_genes_in_pseudotime(cds[genes, ], color_by = "ISC", ncol = 2, nrow = 2, cell_size = 1) +
+  scale_y_log10() +
+  scale_x_reverse() +
+  #scale_color_tableau() +
+  scale_color_brewer(type = "qual", palette = "Set2") +
+  scTools_theme_opts() +
+  theme(legend.position = "none", axis.text.x = element_blank(), axis.ticks.x = element_blank(), strip.text = element_text(size = 18, face = "bold.italic"), axis.ticks.y = element_line(colour = "black"), axis.text.y = element_text(colour = "black"))
+ggsave("plots/ISC/pseudotime/genes_ordered_on_pseudotime_downregulated_ISC2.tiff", dpi = 600, width = 4, height = 4)
+```
+
+Quiescence => no genes involved in quiescence
+
+
+Cell cycle and inhibition of proliferation
+```{r fig.height=2.5, fig.width=10}
+cds$timepoint <- cds$genotype
+genes <- row.names(subset(fData(cds),
+          gene_short_name %in% c("Txnip", "Gas7", "Wfdc1")))
+plot_genes_in_pseudotime(cds[genes, ], color_by = "SC3", ncol = 5, cell_size = 2) +
+  scale_y_log10() +
+  scale_x_reverse() +
+  #scale_color_tableau() +
+  scale_color_brewer(type = "qual", palette = "Set1") +
+  scTools_theme_opts() +
+  theme(legend.position = "none", axis.text.x = element_blank(), axis.ticks.x = element_blank(), strip.text = element_text(size = 18, face = "bold.italic"), axis.ticks.y = element_line(colour = "black"), axis.text.y = element_text(colour = "black"))
+ggsave("plots/ISC/pseudotime/genes_ordered_on_pseudotime_downregulated.tiff", dpi = 600, width = 10, height = 2.5)
+```
+
+#### Intermediate process
+```{r}
+cds$timepoint <- cds$genotype
+genes <- row.names(subset(fData(cds),
+          gene_short_name %in% c("G0s2", "Igfbp3", "Lpl")))
+plot_genes_in_pseudotime(cds[genes, ], color_by = "SC3", ncol = 5, cell_size = 2) +
+  scale_y_log10() +
+  scale_x_reverse() +
+  #scale_color_tableau() +
+  scale_color_brewer(type = "qual", palette = "Set1") +
+  scTools_theme_opts() +
+  theme(legend.position = "none", axis.text.x = element_blank(), axis.ticks.x = element_blank(), strip.text = element_text(size = 18, face = "bold.italic"), axis.ticks.y = element_line(colour = "black"), axis.text.y = element_text(colour = "black"))
+ggsave("plots/ISC/pseudotime/genes_ordered_on_pseudotime_intermediate.tiff", dpi = 600, width = 6, height = 2.5)
+```

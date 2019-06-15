@@ -1,0 +1,91 @@
+---
+title: "SCENIC_results"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(SingleCellExperiment)
+library(scTools)
+library(scater)
+```
+
+```{r}
+sce <- readRDS("data/reads_qc_scran_sc3_SCs.rds")
+sce$cell_type <- plyr::revalue(sce$sc3_2_clusters, c("1" = "ISC", "2" = "SC"))
+sce$genotype <- factor(sce$genotype, levels = c("Healthy", "Dystrophic"))
+sce$cell_genotype <- paste(sce$cell_type, sce$genotype)
+sce$cell_genotype <- factor(sce$cell_genotype, levels = c("ISC Healthy", "ISC Dystrophic", "SC Healthy", "SC Dystrophic"))
+load("int/3.2_regulonAUC.RData")
+regulonAUC <- getAuc(regulonAUC)
+```
+
+```{r}
+sce = plotPCA(sce, ncomponents = 4, colour_by = "cell_genotype", return_SCE = TRUE)
+sce$PC1 <- reducedDim(sce)[,1]
+sce$PC2 <- reducedDim(sce)[,2]
+```
+
+
+```{r}
+plot_regulon <- function(sce_object, regulon, binaryAct, group) {
+  label <- unlist(strsplit(regulon, " "))[1]
+  label <- unlist(strsplit(label, "_"))[1]
+  df <- data.frame(PC1 = sce_object[["PC1"]], PC2 = sce_object[["PC2"]], regulon_activity = binaryAct[regulon, colnames(sce_object)],
+                   group = sce_object[[group]])
+  ggplot2::ggplot(df, aes(x = PC1, y = PC2, col = regulon_activity)) +
+    geom_point(size = 3) +
+    labs(title = label, x = "Principal component 1", y = "Principal component 2", color = "Regulon\nactivity") +
+    guides(shape = guide_legend(title = element_blank())) +
+    viridis::scale_color_viridis(option = "plasma", guide = guide_colorbar(ticks = FALSE, barwidth = 0.5, 
+                                                                                                   barheight = 3, title.vjust = 0.9,
+                                                                                                   title.position = "top")) +
+    theme_bw(base_size = 10) +
+    theme(panel.border = element_blank(), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+          axis.line = element_line(colour = "black"), axis.text = element_blank(), axis.ticks = element_blank(), 
+          legend.position = "right", legend.title = element_text(angle = 0), axis.title = element_text(size = 16),
+          plot.title = element_text(size = 24, face = "bold", hjust = 0.5), legend.justification = c(0, 1))
+}
+```
+
+```{r}
+regulons <- c("")
+plot_regulon(sce, "Elf1 (13g)", regulonAUC, "genotype")
+ggsave("plots/SCENIC/Elf1_PCA.tiff", dpi = 600, width = 10, height = 8, units = "cm")
+```
+
+```{r}
+plot_dims(sce, var = c("Creb3l1", "Timp1", "Adamts14", "Ecm1"))
+```
+
+
+```{r}
+plot_regulon_violin <- function(sce_object, regulon, binaryAct, group, cluster, cell_genotype) {
+  label <- unlist(strsplit(regulon, " "))[1]
+  label <- unlist(strsplit(label, "_"))[1]
+  df <- data.frame(PC1 = sce_object[["PC1"]], PC2 = sce_object[["PC2"]], regulon_activity = binaryAct[regulon, colnames(sce_object)],
+                   group = sce_object[[group]], cluster = sce_object[[cluster]], cell_genotype = sce_object[[cell_genotype]])
+  ggplot2::ggplot(df, aes(x = group, y = regulon_activity, fill = cell_genotype)) +
+    geom_violin(scale = "width") +
+    #geom_boxplot(width = 0.1, outlier.shape = NA, fill = "White") +
+    stat_summary(fun.y = median, geom = "point", size = 3, color = "black") +
+    facet_wrap(~cluster, switch = "x") +
+    scale_y_continuous(expand = c(0, 0)) +
+    labs(title = label, y = "Regulon activity", fill = group) +
+    theme_bw(base_size = 16) +
+    theme(panel.border = element_blank(), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+          axis.line = element_line(colour = "black"), axis.title.x = element_blank(), axis.ticks.x = element_blank(), 
+          legend.title = element_blank(), strip.background = element_blank(), strip.placement = "outside",
+          axis.text.x = element_blank(), axis.text.y = element_text(size = 12), 
+          plot.title = element_text(size = 24, face = "bold", hjust = 0.5)) +
+    scale_fill_brewer(type = "qual", palette =  "Paired")
+}
+```
+
+```{r}
+plot_regulon_violin(sce, "Elf1 (13g)", regulonAUC, "genotype", "cell_type", "cell_genotype") +
+  theme(legend.position = "none") #+
+  #scale_y_continuous(breaks = c(0.05, 0.1, 0.15))
+ggsave("plots/SCENIC/Elf1_violin.tiff", dpi = 600, height = 8, width = 8, units = "cm")
+```
+

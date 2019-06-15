@@ -1,0 +1,488 @@
+---
+title: "Clustering with SC3"
+author: "Jordi Camps"
+date: "`r format(Sys.time(), '%d %B, %Y, %H:%M')`"
+output: html_document
+---
+
+# Load libraries
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+library(SC3)
+library(scater)
+library(RColorBrewer)
+library(viridis)
+library(SingleCellExperiment)
+library(grid)
+library(BiocGenerics)
+library(scTools)
+library(dplyr)
+library(lazyeval)
+library(tidyr)
+library(scran)
+library(pheatmap)
+library(plyr)
+library(ggthemes)
+options(stringsAsFactors = FALSE)
+```
+
+## Import dataset
+```{r}
+set.seed(1234567)
+sce <- readRDS("data/reads_qc_scran_sc3_SCs.rds")
+```
+
+
+
+# Clustering
+## SC3
+```{r, message = FALSE, warning=FALSE}
+sce <- sc3_prepare(sce)
+sce <- sc3_estimate_k(sce)
+metadata(sce)$sc3$k_estimation
+sce <- sc3(sce, ks = 2:8, biology = TRUE, n_cores = 4)
+```
+
+## SC3 interactive
+Check dataset interactively online
+```{r eval=FALSE, include=FALSE}
+sc3_interactive(sce)
+```
+
+
+### Save to rds
+```{r}
+saveRDS(sce, "data/reads_qc_scran_sc3_SCs.rds")
+saveRDS(sce[, sce$sc3_4_clusters == "1" | sce$sc3_4_clusters == "4"], "data/reads_qc_scran_fap.rds") #without sca1- cluster
+saveRDS(sce[, sce$sc3_2_clusters == "2"], "data/reads_qc_scran_musc.rds")
+```
+
+# Plot QC
+```{r}
+plotQC(sce, type = "find-pcs", variable = "total_features")
+plotQC(sce, type = "find-pcs", variable = "sc3_2_clusters")
+plotQC(sce, type = "find-pcs", variable = "genotype")
+```
+
+
+# Plot PCA
+```{r fig.height=10, fig.width=10}
+plotPCA(sce, ncomponents = 4, colour_by = "genotype")
+plotPCA(sce, ncomponents = 4, colour_by = "sc3_5_clusters")
+plotPCA(sce, ncomponents = 4, colour_by = "marker")
+```
+
+## annotate clusters
+```{r}
+sce$celltype <- plyr::revalue(sce$sc3_2_clusters, c("1" = "ISC", "2" = "SC"))
+sce$cluster <- plyr::revalue(sce$sc3_5_clusters, c("1" = "ISC Thbs4+", "2" = "SC", "3" = "ISC Cd55+", "4" = "Sca1-", "5" = "ISC Gdf10+"))
+sce$genotype <- factor(sce$genotype, levels = c("Healthy", "Dystrophic"))
+sce$cell_genotype <- paste(sce$celltype, sce$genotype, sep = " ")
+sce$cell_genotype <- factor(sce$cell_genotype, levels = c("ISC Healthy", "ISC Dystrophic", "SC Healthy", "SC Dystrophic"))
+```
+
+## Remove Sca1- cluster
+```{r}
+sce <- sce[, sce$cluster != "Sca1-"]
+```
+
+# Plot PCA
+```{r fig.height=10, fig.width=10}
+plotPCA(sce, ncomponents = 4, colour_by = "genotype")
+plotPCA(sce, ncomponents = 4, colour_by = "cluster")
+plotPCA(sce, ncomponents = 4, colour_by = "marker")
+```
+
+##Cluster again with sc3
+```{r, message = FALSE, warning=FALSE}
+sce <- sc3_prepare(sce)
+sce <- sc3_estimate_k(sce)
+metadata(sce)$sc3$k_estimation
+sce <- sc3(sce, ks = 2:7, biology = TRUE, n_cores = 4)
+```
+
+## annotate clusters
+```{r}
+sce$celltype <- plyr::revalue(sce$sc3_2_clusters, c("1" = "ISC", "2" = "SC"))
+sce$cluster <- plyr::revalue(sce$sc3_4_clusters, c("1" = "ISC Thbs4+", "2" = "SC", "3" = "ISC Cd55+", "4" = "ISC Gdf10+"))
+sce$genotype <- factor(sce$genotype, levels = c("Healthy", "Dystrophic"))
+sce$cell_genotype <- paste(sce$celltype, sce$genotype, sep = " ")
+sce$cell_genotype <- factor(sce$cell_genotype, levels = c("ISC Healthy", "ISC Dystrophic", "SC Healthy", "SC Dystrophic"))
+```
+
+## Export results
+### Export results to excel
+**Install perl on your computer to use this function!**
+```{r}
+sc3_export_results_xls(sce)
+```
+
+### Export csv with all differentially expressed genes
+k = 4
+```{r}
+sc3_plot_de_genes(sce, k = 5, show_pdata = TRUE)
+
+sce %>%
+  rowData() %>%
+  as_tibble() %>%
+  filter(sc3_2_de_padj < 0.01) %>%
+  select(feature_symbol, ensembl_gene_id, sc3_2_markers_auroc, sc3_2_markers_clusts, sc3_2_de_padj) %>%
+  arrange(sc3_2_de_padj) %>%
+  write.csv("tables/SC/k2_de_genes.csv")
+```
+
+## Plot results
+## Export principal components and tSNE dimensions in reduced dim
+```{r fig.height=10, fig.width=10}
+sce = plotPCA(sce, ncomponents = 4, colour_by = "sc3_2_clusters", return_SCE = TRUE)
+sce$PC1 <- reducedDim(sce)[,1]
+sce$PC2 <- reducedDim(sce)[,2]
+
+sce <- plotTSNE(sce, colour_by = "sc3_4_clusters", return_SCE = TRUE, perplexity = 20, exprs_values = "logcounts")
+sce$Dim1 <- reducedDims(sce)$TSNE[,1]
+sce$Dim2 <- reducedDims(sce)$TSNE[,2]
+```
+
+## Genes expressed per cluster
+ISCs
+```{r}
+#library(plyr)
+#musc$cluster <- revalue(musc$sc3_3_clusters, c("1" = "qSCs", "2" = "Myoblast", "3" = "aSCs"))
+#sce$cluster <- factor(sce$cluster, levels = c("qSCs", "aSCs", "Myoblast"))
+#isc <- sce[, sce$sc3_4_clusters == "1" | sce$sc3_4_clusters == "4"]
+df <- data.frame(genes_amount = sce$total_features, type = sce$celltype, genotype = sce$genotype, cell_genotype = sce$cell_genotype)
+ggplot(df, aes(x = genotype, y = genes_amount, fill = cell_genotype)) +
+  geom_boxplot(notch = TRUE) +
+  #geom_violin(scale = "width", trim = FALSE) +
+  #stat_summary(fun.y = "median", geom = "point", color = "black", size = 2) +
+  labs(y = "Number of genes per cell") +
+  scale_fill_brewer(type = "qual", palette = "Paired") +
+  facet_grid(.~type, switch = "x") +
+  theme_bw(base_size = 12) +
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+        axis.line = element_line(colour = "black"), axis.text.x = element_blank(),
+        legend.position = "none", legend.title = element_blank(), axis.title.x = element_blank(), axis.ticks.x = element_blank(),
+        strip.background = element_blank(), strip.placement = "outside", legend.text = element_text(size = 6)
+        )
+ggsave("plots/SC/genes_expressed_boxplit.tiff", width = 6, height = 7, units = "cm", dpi = 600)
+```
+
+
+
+## Plot clusters on PCA and tSNE
+```{r}
+plot_dims(sce, "PC1", "PC2", color = "marker", shape  = "genotype", theme = 18, point_size = 3) +
+  scale_color_brewer(palette = "Set1") +
+  theme(legend.position = "right", legend.title = element_blank(), legend.text = element_text(size = 14), legend.justification = c(0, 1)) +
+  labs(x = "Principal component 1", y = "Principal component 2") +
+  guides(shape = guide_legend(ncol = 1), color = guide_legend(ncol = 1))
+  ggsave("plots/SC/PCA/marker_genotype.tiff", height = 10, width = 14, units = "cm", dpi = 600)
+```
+
+```{r}
+ggplot(as_tibble(colData(sce)), aes(x = PC1, y = PC2, shape = celltype, col = celltype)) +
+  geom_point(size = 3) +  
+  scale_color_manual(values = c("mediumseagreen", "sienna1")) +
+  theme_bw(base_size = 18) +
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+                axis.line = element_line(colour = "black"), axis.text = element_blank(), axis.ticks = element_blank(),
+                legend.position = "top", legend.title = element_blank()) +
+  labs(x = "Principal component 1", y = "Principal component 2")
+  ggsave("plots/SC/PCA/celltype.tiff", height = 11, width = 10, units = "cm", dpi = 600)
+```
+
+```{r}
+plot_dims(sce, "PC1", "PC2", color = "cell_genotype", theme = 18, point_size = 3, col_values = brewer.pal(4, "Paired")) +
+  theme(legend.position = "right", legend.title = element_blank()) +
+  labs(x = "Principal component 1", y = "Principal component 2") +
+  guides(shape = FALSE, color = guide_legend(ncol = 1))
+  ggsave("plots/SC/PCA/sc3_celltype.tiff", height = 10, width = 15, units = "cm", dpi = 600)
+```
+
+Geom_density plot to show genotype difference over PC2
+```{r}
+ggplot(as_tibble(colData(sce)), aes(x = PC2, fill = cell_genotype, alpha = 0.5)) +
+  geom_density() +
+  facet_grid(.~celltype, switch = "x") +
+  #scale_fill_grey() +
+  #scale_fill_manual(values=c("#999999", "#E69F00", "#56B4E9")) +
+  scale_fill_brewer(type = "qual", palette = "Paired") +
+  labs(x = "Principal component 2") +
+  guides(alpha = FALSE) +
+  theme_bw(base_size = 18) +
+          theme(panel.border = element_blank(), panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+                axis.line = element_line(colour = "black"), axis.text = element_blank(), axis.ticks = element_blank(),
+                axis.line.y = element_blank(), axis.title.y = element_blank(), legend.position = "top",
+                legend.title = element_blank())
+ggsave("plots/SC/PC2_genotype.tiff", dpi = 600, width = 10, height = 11, units = "cm")
+```
+
+```{r}
+plot_dims(sce, color = "sc3_5_clusters")
+```
+
+
+
+
+```{r}
+genes <- c("Myf5", "Cd82", "Fgfr4", "Myod1", "Pax7", "Des", "Myog", "Ly6a", "Pdgfra", "Dcn", "Lum", "Col6a3")
+for (g in genes) {
+  print(plot_dims(sce, "PC1", "PC2", g))
+}
+plot_dims(sce, "Dim1", "Dim2", "sc3_5_clusters")
+```
+
+## Known markers for satellite cells
+```{r}
+Logcounts <- as.factor(c("Myf5", "Pax7"))
+#label <- c(Myf5 = "Myf5", Des = "Desmin", Pdgfra = "Pdgfra", Ly6a = "Sca-1")
+Logcounts <- factor(Logcounts, levels = c("Pax7", "Myf5"))
+plot_dims(sce, "PC1", "PC2", color = Logcounts, theme = 12, point_size = 2) +
+  scale_color_viridis(option = "plasma", breaks = c(0, 10), guide = guide_colorbar(ticks = FALSE,
+                                                       barwidth = 2,
+                                                       barheight = 0.5,
+                                                       title = "Log(Exprs)",
+                                                       title.vjust = 1.1)) +
+  theme(legend.justification = c(1, 1), legend.position = "bottom", legend.title = element_text(size = 8), legend.text = element_text(size = 8)) +
+  labs(x = "Principal component 1", y = "Principal component 2")
+ggsave("plots/SC/PCA/SC_markers.tiff", height = 6, width = 10, units = "cm", dpi = 600)
+```
+
+## Known markers for ISCs
+```{r}
+Logcounts <- as.factor(c("Pdgfra", "Ly6a"))
+label <- c(Pdgfra = "Pdgfra", Ly6a = "Sca-1")
+#Logcounts <- factor(Logcounts, levels = c("Pax7", "Myf5"))
+plot_dims(sce, "PC1", "PC2", color = Logcounts, labels = label, theme = 12, point_size = 2) +
+  scale_color_viridis(option = "plasma", breaks = c(0, 10), guide = guide_colorbar(ticks = FALSE,
+                                                       barwidth = 2,
+                                                       barheight = 0.5,
+                                                       title = "Log(Exprs)",
+                                                       title.vjust = 1.1)) +
+  theme(legend.justification = c(1, 1), legend.position = "bottom", legend.title = element_text(size = 8), legend.text = element_text(size = 8)) +
+  labs(x = "Principal component 1", y = "Principal component 2")
+ggsave("plots/SC/PCA/ISC_markers.tiff", height = 6, width = 10, units = "cm", dpi = 600)
+```
+
+## One marker for Satellite cells and one for Interstitial stem cells
+```{r}
+Logcounts <- as.factor(c("Myf5", "Ly6a"))
+label <- c(Myf5 = "Myf5", Ly6a = "Sca-1")
+#Logcounts <- factor(Logcounts, levels = c("Pax7", "Myf5"))
+plot_dims(sce, "PC1", "PC2", color = Logcounts, labels = label, theme = 10, point_size = 2, ncol = 1) +
+  scale_color_viridis(option = "plasma", breaks = c(0, 12), guide = guide_colorbar(ticks = FALSE,
+                                                       barwidth = 0.5, barheight = 2, direction = "vertical",
+                                                       title = "Log(Exprs)", title.position = "bottom", 
+                                                       title.theme = element_text(angle = 90, size = 10), 
+                                                       title.vjust = 1.1)) +
+  theme(legend.justification = c(1, 1), legend.position = "right", strip.text = element_text(size = 22)) +
+  labs(x = "Principal component 1", y = "Principal component 2")
+ggsave("plots/SC/PCA/known_markers.tiff", height = 10, width = 7, units = "cm", dpi = 600)
+```
+
+
+```{r}
+Logcounts <- as.factor(c("Cd82", "Fgfr4", "Dcn", "Col6a3"))
+label <- c(Cd82 = "Cd82", Fgfr4 = "Fgfr4", Dcn = "Decorin", Col6a3 = "Col6a3")
+Logcounts <- factor(Logcounts, levels = c("Cd82", "Dcn", "Fgfr4", "Col6a3"))
+plot_dims(sce, "PC1", "PC2", var = Logcounts, labels = label, theme = 14) +
+  scale_color_viridis(option = "inferno", breaks = c(0, 15),
+                      guide = guide_colorbar(ticks = FALSE, barwidth = 4, barheight = 0.7, title = "Log(Exprs)", title.vjust = 1.1)) +
+  theme(legend.justification = c(0, 1), legend.position = "bottom", legend.title = element_text(size = 12))
+ggsave("plots/SC/PCA/new_markers.tiff", height = 14, width = 16, units = "cm", dpi = 600)
+```
+
+
+
+```{r}
+temp <- data.frame(PC1 = sce$PC1, t(logcounts(sce[c("Ly6a", "Pdgfra"), ])))
+temp <- temp %>%
+  as_tibble() %>%
+  gather(key = "gene", value = "logcounts", -PC1)
+  
+ggplot(temp, aes(x = PC1, y = logcounts, col = gene)) +
+  geom_point() +
+  geom_smooth()
+```
+
+
+## Plot expression of clusters
+```{r fig.height=10, fig.width=10}
+genes <- c("Cd82", "Myf5", "Myod1", "Ly6a", "Pdgfra", "Lum")
+plot_expression(sce, genes, "sc3_2_clusters")
+```
+
+
+```{r}
+genes <- c("Ly6a", "Pdgfra", "Ace", "Dpt", "Ifi205")
+plot_expression(sce, genes, "sc3_3_clusters")
+```
+
+
+## Plot heatmap
+SC3 functions
+```{r}
+make_col_ann_for_heatmaps <- function(object, show_pdata) {
+    if (any(!show_pdata %in% colnames(colData(object)))) {
+        show_pdata_excl <- show_pdata[!show_pdata %in% colnames(colData(object))]
+        show_pdata <- show_pdata[show_pdata %in% colnames(colData(object))]
+        message(paste0("Provided columns '", paste(show_pdata_excl, collapse = "', '"), "' do not exist in the phenoData table!"))
+        if (length(show_pdata) == 0) {
+            return(NULL)
+        }
+    }
+    ann <- NULL
+    if (is.null(metadata(object)$sc3$svm_train_inds)) {
+        ann <- colData(object)[, colnames(colData(object)) %in% show_pdata]
+    } else {
+        ann <- colData(object)[metadata(object)$sc3$svm_train_inds, colnames(colData(object)) %in% 
+            show_pdata]
+    }
+    # remove columns with 1 value only
+    if (length(show_pdata) > 1) {
+        keep <- unlist(lapply(ann, function(x) {
+            length(unique(x))
+        })) > 1
+        if (!all(keep)) {
+            message(paste0("Columns '", paste(names(keep)[!keep], collapse = "', '"), "' were excluded from annotation since they contained only a single value."))
+        }
+        ann <- ann[, names(keep)[keep]]
+        if (ncol(ann) == 0) {
+            ann <- NULL
+        } else {
+            ann <- as.data.frame(lapply(ann, function(x) {
+                if (nlevels(as.factor(x)) > 9) 
+                  x else as.factor(x)
+            }))
+            # convert outlier scores back to numeric
+            for (i in grep("_log2_outlier_score", colnames(ann))) {
+                if (class(ann[, i]) == "factor") {
+                  ann[, i] <- as.numeric(levels(ann[, i]))[ann[, i]]
+                }
+            }
+        }
+    } else {
+        if (length(unique(ann)) > 1) {
+            ann <- as.data.frame(ann)
+            colnames(ann) <- show_pdata
+            if (!grepl("_log2_outlier_score", show_pdata)) {
+                ann <- as.data.frame(lapply(ann, function(x) {
+                  if (nlevels(as.factor(x)) > 9) 
+                    return(x) else return(as.factor(x))
+                }))
+            }
+        } else {
+            message(paste0("Column '", show_pdata, "' was excluded from annotation since they contained only a single value."))
+            ann <- NULL
+        }
+    }
+    return(ann)
+}
+
+organise_marker_genes <- function(object, k, p_val, auroc) {
+    dat <- rowData(object)[, c(paste0("sc3_", k, "_markers_clusts"), paste0("sc3_", k, 
+        "_markers_auroc"), paste0("sc3_", k, "_markers_padj"), "feature_symbol")]
+    dat <- dat[dat[, paste0("sc3_", k, "_markers_padj")] < p_val & !is.na(dat[, paste0("sc3_", 
+        k, "_markers_padj")]), ]
+    dat <- dat[dat[, paste0("sc3_", k, "_markers_auroc")] > auroc, ]
+    
+    d <- NULL
+    
+    for (i in sort(unique(dat[, paste0("sc3_", k, "_markers_clusts")]))) {
+        tmp <- dat[dat[, paste0("sc3_", k, "_markers_clusts")] == i, ]
+        tmp <- tmp[order(tmp[, paste0("sc3_", k, "_markers_auroc")], decreasing = TRUE), ]
+        d <- rbind(d, tmp)
+    }
+    
+    return(d)
+}
+
+markers_for_heatmap <- function(markers) {
+    res <- NULL
+    for (i in unique(markers[, 1])) {
+        tmp <- markers[markers[, 1] == i, ]
+        if (nrow(tmp) > 10) {
+            res <- rbind(res, tmp[1:10, ])
+        } else {
+            res <- rbind(res, tmp)
+        }
+    }
+    
+    return(res)
+}
+```
+
+```{r fig.height=10, fig.width=10}
+#plot_markers_trial <- function(object, k, auroc = 0.85, p.val = 0.01, show_pdata = NULL) {
+  if (is.null(metadata(sce)$sc3$consensus)) {
+    warning(paste0("Please run sc3_consensus() first!"))
+    return(sce)
+  }
+  hc <- metadata(sce)$sc3$consensus[[as.character(2)]]$hc
+  dataset <- get_processed_dataset(sce)
+  if (!is.null(metadata(sce)$sc3$svm_train_inds)) {
+    dataset <- dataset[, metadata(sce)$sc3$svm_train_inds]
+  }
+
+  add_ann_col <- FALSE
+  ann <- NULL
+  if (!is.null(sce$celltype)) {
+    ann <- make_col_ann_for_heatmaps(sce, "celltype")
+    if (!is.null(ann)) {
+      add_ann_col <- TRUE
+      # make same names for the annotation table
+      rownames(ann) <- colnames(dataset)
+    }
+  }
+
+  # get all marker genes
+  markers <- organise_marker_genes(sce, 2, 0.01, 0.85)
+  # get top 10 marker genes of each cluster
+  markers <- markers_for_heatmap(markers)
+
+  row.ann <- data.frame(clust_num = factor(markers[, 1], levels = unique(markers[, 1])))
+  clust_names <- data.frame(clust_num = 1:2, Cluster = c("ISC", "SC"))
+  row.ann <- merge(row.ann, clust_names, by = "clust_num")
+  row.ann <- row.ann["Cluster"]
+  #row.ann <- data.frame(Cluster = sce$sc3_4_clusters)
+  rownames(row.ann) <- markers$feature_symbol
+
+  mat_colors <- list(celltype = c("seagreen", "tomato"))
+  names(mat_colors$celltype) <- unique(row.ann$Cluster)
+  #names(mat_colors$genotype) <- unique(ann$genotype)
+  #names(Cluster) <- c("FAP/MAB", "Satellite cells", "Schwann cells", "Smooth muscle cells")
+  #anno_colors <- list(Cluster = Cluster)
+
+  do.call(pheatmap::pheatmap, c(list(dataset[markers$feature_symbol, , drop = FALSE],
+                                     color = colorRampPalette(rev(brewer.pal(n = 11, name = "RdYlBu")))(256),
+                                     show_colnames = FALSE,
+                                     cluster_rows = FALSE, 
+                                     cluster_cols = hc, 
+                                     #cutree_cols = 4, 
+                                     annotation_row = NULL, 
+                                     annotation_names_row = FALSE, 
+                                     #gaps_row = which(diff(markers[, 1]) != 0), 
+                                     cellheight = 16,
+                                     cellwidth = 1,
+                                     treeheight_col = 0),
+                                     list(annotation_col = ann)[add_ann_col], 
+                                     list(annotation_colors = mat_colors, 
+                                     annotation_legend = FALSE,
+                                     fontsize = 14,
+                                     filename = "plots/SC/heatmap/k2.tiff")#,
+                                     #width = 8,
+                                     #height = 10
+                                     ))
+#}
+```
+
+## Save RDS
+```{r}
+saveRDS(sce, file = "data/reads_qc_scran_SC3.rds")
+```
+
+# Session info
+```{r}
+sessionInfo()
+```
+

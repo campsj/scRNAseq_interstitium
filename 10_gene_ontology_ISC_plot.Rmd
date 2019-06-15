@@ -1,0 +1,80 @@
+---
+title: "Gene ontology ISC"
+author: "Jordi Camps"
+date: "2018 M05 2"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+```
+
+## Import text files
+```{r}
+go_isc1 = read.delim("tables/ISC/GO/GO_Biological_Process_2018_table_ISC1.txt", header = TRUE)
+go_isc2 = read.delim("tables/ISC/GO/GO_Biological_Process_2018_table_ISC2.txt", header = TRUE)
+go_isc3a = read.delim("tables/ISC/GO/GO_Biological_Process_2018_table_ISC3a.txt", header = TRUE)
+go_isc3b = read.delim("tables/ISC/GO/GO_Biological_Process_2018_table_ISC3b.txt", header = TRUE)
+go_isc3c = read.delim("tables/ISC/GO/GO_Biological_Process_2018_table_ISC3c.txt", header = TRUE)
+head(go_isc1)
+```
+
+## Add column specifying type of cluster
+```{r}
+go_isc1$Cluster <- "ISC1"
+go_isc2$Cluster <- "ISC2"
+go_isc3a$Cluster <- "ISC3a"
+go_isc3b$Cluster <- "ISC3b"
+go_isc3c$Cluster <- "ISC3c"
+```
+
+## Bind dataframes together
+```{r}
+go <- rbind(go_isc1, go_isc2, go_isc3a, go_isc3b, go_isc3c)
+go$Cluster <- factor(go$Cluster, levels = c("ISC1", "ISC2", "ISC3a", "ISC3b", "ISC3c"))
+```
+
+## Separate GO term and create Term and cluster column for factorization
+```{r}
+go <- go %>%
+  tidyr::separate(Term, c("Term", "Number"), sep = "[(]")
+```
+
+## Select only op 5 terms per  cluster and order by Combined score
+```{r}
+p <- tbl_df(go) %>%
+  group_by(Cluster) %>%
+  top_n(n = 5, wt = Combined.Score) %>%
+  ungroup() %>%
+  arrange(Cluster, desc(Combined.Score)) %>%
+  mutate(order = row_number())
+```
+
+```{r}
+p[5, "Term"] <- "positive regulation NK cell cytotoxicity against tumor cell target"
+p[25, "Term"] <- "TM receptor tyrosine phosphatase signaling pathway"
+```
+
+## Plot
+```{r fig.height=6, fig.width=5.5}
+p %>%
+ggplot(aes(y = Combined.Score, x = rev(order), fill = Cluster)) +
+  geom_col(width = 0.8) + 
+  #geom_hline(yintercept = 1.3, color = "red", size = 1) +
+  #scale_x_discrete(labels = rev(go$Term)) +
+  scale_x_continuous(breaks = p$order, labels = rev(p$Term), expand = c(0, 0)) +
+  scale_fill_manual(values = c("#66c2a5", "#fc8d62", "#76BAFF", "#785ECC", "#AD54B2")) +
+  facet_wrap(~Cluster, ncol = 1, scales = "free_y") +
+  coord_flip() +
+  scale_y_continuous("Combined score", position = "left", expand = c(0, 0)) +
+  theme_bw(base_size = 16) +
+  theme(panel.border = element_blank(), panel.grid = element_blank(), axis.title.y = element_blank(), 
+        axis.title.x = element_text(hjust = 1, size = 11),
+        axis.ticks.y = element_blank(), axis.line = element_line(color = "black"), axis.text = element_text(color = "black", size = 11),
+        axis.ticks.x = element_line(color = "black"), axis.text.y = element_text(hjust = 1, vjust = 0.3), strip.background = element_blank(),
+        legend.position = "none", strip.text = element_blank())
+ggsave("plots/ISC/GO/GO_biol.pdf", dpi = 600, width = 5.5, height = 6)
+```
+

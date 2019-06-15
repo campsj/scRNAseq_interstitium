@@ -1,0 +1,69 @@
+---
+title: "10_GtEX_analysis_ISC"
+author: "Jordi Camps"
+date: "2018 M09 26"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+```
+
+## Import files
+```{r}
+go_isc1 = read.delim("tables/ISC/GTEX/GTEx_Tissue_Sample_Gene_Expression_Profiles_up_table_ISC1.txt", header = TRUE)
+go_isc2 = read.delim("tables/ISC/GTEX/GTEx_Tissue_Sample_Gene_Expression_Profiles_up_table_ISC2.txt", header = TRUE)
+go_isc3a = read.delim("tables/ISC/GTEX/GTEx_Tissue_Sample_Gene_Expression_Profiles_up_table_ISC3a.txt", header = TRUE)
+go_isc3b = read.delim("tables/ISC/GTEX/GTEx_Tissue_Sample_Gene_Expression_Profiles_up_table_ISC3b.txt", header = TRUE)
+go_isc3c = read.delim("tables/ISC/GTEX/GTEx_Tissue_Sample_Gene_Expression_Profiles_up_table_ISC3c.txt", header = TRUE)
+head(go_isc1)
+```
+
+## Add column specifying type of cluster
+```{r}
+go_isc1$Cluster <- "ISC1"
+go_isc2$Cluster <- "ISC2"
+go_isc3a$Cluster <- "ISC3a"
+go_isc3b$Cluster <- "ISC3b"
+go_isc3c$Cluster <- "ISC3c"
+```
+
+## Bind dataframes together
+```{r}
+go <- rbind(go_isc1, go_isc2, go_isc3a, go_isc3b, go_isc3c)
+go$Cluster <- factor(go$Cluster, levels = c("ISC1", "ISC2", "ISC3a", "ISC3b", "ISC3c"))
+```
+
+## Filter for p-value, select top 5 terms and order by highest count
+```{r}
+p <- go %>%
+  separate(Term, into = c("Code", "Tissue", "Sex", "Age", "Age variable"), sep = "_") %>%
+  filter(Adjusted.P.value <= 0.15) %>%
+  group_by(Cluster, Tissue) %>%
+  tally() %>%
+  filter(n > 5) %>%
+  ungroup() %>%
+  arrange(Cluster, desc(n)) %>%
+  mutate(order = row_number())
+```
+
+## Plot
+```{r fig.height=6, fig.width=2.5}
+p %>%
+  ggplot(aes(x = rev(order), y = n, fill = Cluster)) +
+  geom_col() +
+  facet_wrap(~Cluster, ncol = 1, scales = "free_y") +
+  scale_fill_manual(values = c("#66c2a5", "#fc8d62", "#76BAFF", "#785ECC", "#AD54B2")) +
+  scale_x_continuous(breaks = p$order, labels = rev(p$Tissue), expand = c(0, 0)) +
+  scale_y_continuous("Nr. significant terms", expand = c(0, 0)) +
+  coord_flip() +
+  theme_bw(base_size = 16) +
+  theme(panel.border = element_blank(), panel.grid = element_blank(), axis.line = element_line(colour = "black"), axis.ticks.y = element_blank(),
+        axis.ticks.x = element_line(colour = "black"), axis.title.y = element_blank(), axis.text.x = element_text(colour = "black", size = 11),
+        legend.position = "none", axis.text.y = element_text(colour = "black", vjust = 0.3), axis.title.x = element_text(hjust = 1, size = 11),
+        strip.background = element_blank(), strip.text = element_blank())
+ggsave("plots/ISC/GO/GtEX.pdf", dpi = 600, height = 6, width = 2.5)
+```
